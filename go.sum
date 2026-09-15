@@ -2,6 +2,8 @@ github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/iniwex5/netlink v1.3.3 h1:Dk6b7Wao+v4leIqv9xnUSLCxpA7wzm664+adY+KD8Z0=
 github.com/iniwex5/netlink v1.3.3/go.mod h1:M6EXj3HTbyuWsUmVXRqPNH+Oai3Rwf8CYyWqd7RoRHQ=
+github.com/lilyzhaun/softvowifi-netlink v0.0.0-20260915075719-be8893d91893 h1:xva3v+Vbfh8l8gqulKOPe6f4QfM2AB9w/ZD+xm1AIG8=
+github.com/lilyzhaun/softvowifi-netlink v0.0.0-20260915075719-be8893d91893/go.mod h1:M6EXj3HTbyuWsUmVXRqPNH+Oai3Rwf8CYyWqd7RoRHQ=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/songgao/water v0.0.0-20200317203138-2b4b6d7c09d8 h1:TG/diQgUe0pntT/2D9tmUCz4VNwm9MfrtPr0SU2qSX8=
