@@ -1,7 +1,7 @@
-> **维护迁移待完成（Issue 35）**：拟由 `lilyzhaun` 维护于新私有仓库 `lilyzhaun/softvowifi-swu-go`；该目标未确认，本任务未创建远端。
-> 当前仍使用本地已打补丁副本，模块路径 `github.com/1239t/swu-go` 不变；来源不确定性见 [PROVENANCE.md](PROVENANCE.md)。
-> 下方原 README 完整保留，其安装路径与功能描述是历史说明，不代表当前生产验收。原版权与 [LICENSE](LICENSE) 保留。
-> 迁移清单为主仓库 `engine/third_party/manifest.json`；流程见主仓库 `docs/第三方Go依赖维护与导出.md`。
+> **私有维护仓库（Issue 35，2026-09-15 核对）**：[lilyzhaun/softvowifi-swu-go](https://github.com/lilyzhaun/softvowifi-swu-go) 已存在且为 PRIVATE；`lilyzhaun` 为所有者和最终集成人，`newdamm` 负责经审查的维护 PR。本次 write 邀请状态为 **PENDINGINVITATION**，并非已取得访问权，须由 `newdamm` 本人接受；未授予 admin。
+> 模块路径 `github.com/1239t/swu-go` 不变。SoftVoWiFi 已验证的迁移候选固定消费 `a4e38cdc98372219f2dc60a7c59a9c0877ccda2c`（`v0.0.0-20260915090250-a4e38cdc9837`），不是最新维护 `main` HEAD。本次仅文档提交推进 `main`，不改变生产 pin、Go 源码、go.mod/go.sum 或许可证；主仓迁移仍待最终验收。当前 netlink 已固定到真实私有版本，不再依赖 `../netlink`，详见 [PROVENANCE.md](PROVENANCE.md)。
+> 首导源为 SoftVoWiFi `8ca6114de2c915473165bf0698a09ced0f9108e3` 的 `engine/third_party/swu-go`，私有首导提交为 `002f1eabfc8430e25ccb845e8b710e8c2bdb1d57`。这是独立私有快照导入，不宣称属于 GitHub fork network；纯上游来源仍 unknown，私有性不代表法律或公开发行放行。
+> 下方原 README 完整保留，其安装路径与功能描述均为历史说明，不代表当前集成或生产验收。原版权与 [LICENSE](LICENSE) 保留。迁移清单为主仓库 `engine/third_party/manifest.json`；流程见主仓库 `docs/第三方Go依赖维护与导出.md`。后续生产修改须另行审查、验证并更新固定版本，不能自动跟随维护 HEAD。
 
 # swu-go
 

@@ -11,13 +11,13 @@
 
 初始自有源码冻结点为 SoftVoWiFi `53c74b87a536eb684f0a84a474269a4cf596a1e2` 的 `engine/third_party/swu-go`。这是包含本地生产修复及回归的准确维护快照，不声称包含完整上游项目或历史。
 
-拟定新私有目标 `lilyzhaun/softvowifi-swu-go`，所有者和最终维护者为 `lilyzhaun`，迁移工具与 PR 由 `newdamm` 提供。目标尚未确认，本任务未创建或推送该仓库；私有不可见不等于不存在。
+实际私有仓库为 [lilyzhaun/softvowifi-swu-go](https://github.com/lilyzhaun/softvowifi-swu-go)，2026-09-15 API 确认 PRIVATE；所有者和最终维护者为 `lilyzhaun`，迁移工具与后续经审查的维护 PR 由 `newdamm` 提供。本次 write 邀请状态为 **PENDINGINVITATION**，须 `newdamm` 本人接受后才能确认访问权；未授予 admin。私有快照导入不宣称属于原上游 GitHub fork network。
 
-机器事实源为主仓库 `engine/third_party/manifest.json`。导出的 `.meta.json` 区分初始冻结点与实际 `export_commit`、`source_tree`，同时保留来源说明、许可证和工具/清单指纹。旧 commit 导出仅用于基线验证，不包含本文件，不能用作正式迁移导入源。正式导入须固定包含本说明的已审核提交重新导出，并随该快照保留对应 sidecar。
+机器事实源为主仓库 `engine/third_party/manifest.json`。导出的 `.meta.json` 区分初始冻结点与实际 `export_commit`、`source_tree`，同时保留来源说明、许可证和工具/清单指纹。旧 `53c74b8` 导出仅用于基线验证，不包含本文件，未用作正式导入。实际首导来自 SoftVoWiFi `8ca6114de2c915473165bf0698a09ced0f9108e3` 的 `engine/third_party/swu-go`，源码树为 `6976e8f9e2884724d026c8c86fd5901716977b90`，私有首导提交为 `002f1eabfc8430e25ccb845e8b710e8c2bdb1d57`。对应 sidecar 和首导审计回执由 `lilyzhaun` 在私有证据目录保留，不在本仓库发布；初始冻结点与首导记录属于历史，不是重跑旧首导的指令。
 
-当前 `go.mod` 的 `replace github.com/iniwex5/netlink => ../netlink` 未改变。独立维护前应先由 `lilyzhaun` 确定 netlink 的真实远端版本，再单独修正 swu-go 依赖并验证；主模块不继承该 nested replace。当前不得删除本地源树。完整顺序见主仓库 `docs/第三方Go依赖维护与导出.md`。
+私有维护提交 `a4e38cdc98372219f2dc60a7c59a9c0877ccda2c` 已将历史 `../netlink` 替换为 `github.com/lilyzhaun/softvowifi-netlink v0.0.0-20260915075719-be8893d91893`（固定 commit `be8893d918930ed1f6c790c41e51c13c20b20cf9`），并在 `go.sum` 保留真实校验和。主模块不继承该 nested replace，仍须显式固定 netlink。SoftVoWiFi 已验证的迁移候选消费 SWu `v0.0.0-20260915090250-a4e38cdc9837`，不是最新维护 `main` HEAD；本次仅文档提交不改变这些 pin、生产代码、模块文件或许可。主仓工作区已移除重复源码，提交与最终验收尚待完成；本说明不宣布 Issue35 完成。完整流程见主仓库 `docs/第三方Go依赖维护与导出.md`。
 
-## 本地维护跨度（2026-09-15 源码就绪核对）
+## 历史：本地维护跨度（2026-09-15 首导前源码就绪核对）
 
 首次本地导入已经包含 A/B；之后的维护远不止两个修改。以下为可追溯的本地历史分组与测试入口，不是相对纯上游的完整 diff 或逐行法律审查，未找到的首次导入前来源继续 unknown。
 
