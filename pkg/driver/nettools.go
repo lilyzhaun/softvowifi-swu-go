@@ -331,15 +331,15 @@ func (n *NetTools) AddRule(srcCIDR string, table int) error {
 		rule.Family = netlink.FAMILY_V4
 	}
 
-	// 清理旧规则 (防止 Table ID 变更导致残留规则指向无效表)
-	// 查找所有源地址匹配的规则并删除
+	// 相同源地址可属于多个活动会话，只替换本表中的旧规则。
+	// 旧表应由所属会话的 FlushRules 清理，不能按源地址跨表回收。
 	family := netlink.FAMILY_V4
 	if src.IP.To4() == nil {
 		family = netlink.FAMILY_V6
 	}
 	if rules, err := netlink.RuleList(family); err == nil {
 		for _, r := range rules {
-			if r.Src != nil && r.Src.String() == src.String() {
+			if r.Src != nil && r.Src.String() == src.String() && r.Table == table {
 				// 忽略错误，尽可能清理
 				_ = netlink.RuleDel(&r)
 			}

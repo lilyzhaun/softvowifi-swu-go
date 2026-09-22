@@ -17,6 +17,12 @@
 
 私有维护提交 `a4e38cdc98372219f2dc60a7c59a9c0877ccda2c` 已将历史 `../netlink` 替换为 `github.com/lilyzhaun/softvowifi-netlink v0.0.0-20260915075719-be8893d91893`（固定 commit `be8893d918930ed1f6c790c41e51c13c20b20cf9`），并在 `go.sum` 保留真实校验和。主模块不继承该 nested replace，仍须显式固定 netlink。SoftVoWiFi 已验证的迁移候选消费 SWu `v0.0.0-20260915090250-a4e38cdc9837`，不是最新维护 `main` HEAD；本次仅文档提交不改变这些 pin、生产代码、模块文件或许可。主仓工作区已移除重复源码，提交与最终验收尚待完成；本说明不宣布 Issue35 完成。完整流程见主仓库 `docs/第三方Go依赖维护与导出.md`。
 
+## 2026-09-22：策略路由规则的表归属修正
+
+在维护基准 `16a78ac` 上，`lilyzhaun` 修正 `pkg/driver/nettools.go:AddRule`：只替换同族、同源且同目标表的规则，保留其他活动会话的同源规则。原实现试图按源地址清理旧表残留，不能区分已过期表与另一活动 owner；旧表回收仍应由所属会话的 `FlushRules(table, iface)` 完成，不新增跨表清理或迁移兜底。
+
+直接回归为 `pkg/driver/nettools_rule_ownership_linux_test.go`，使用已有隔离内核测试防护，覆盖 IPv4/IPv6、两种添加顺序、重复安装、canary 保留及停 A 保 B。实现、测试和本条说明由 `lilyzhaun` 独立复核后提交；不改变模块路径、固定依赖、许可证或上述 unknown 上游归属，也不代表主仓已更新 pin 或完成设备验收。
+
 ## 历史：本地维护跨度（2026-09-15 首导前源码就绪核对）
 
 首次本地导入已经包含 A/B；之后的维护远不止两个修改。以下为可追溯的本地历史分组与测试入口，不是相对纯上游的完整 diff 或逐行法律审查，未找到的首次导入前来源继续 unknown。
