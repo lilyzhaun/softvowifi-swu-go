@@ -23,6 +23,14 @@
 
 直接回归为 `pkg/driver/nettools_rule_ownership_linux_test.go`，使用已有隔离内核测试防护，覆盖 IPv4/IPv6、两种添加顺序、重复安装、canary 保留及停 A 保 B。实现、测试和本条说明由 `lilyzhaun` 独立复核后提交；不改变模块路径、固定依赖、许可证或上述 unknown 上游归属，也不代表主仓已更新 pin 或完成设备验收。
 
+## 2026-10-09：Child SA 换钥与退役的 SPI 方向
+
+负责人`lilyzhaun`，基准`5d48a58cf8657daebeea6efde7bd4acc99ea8ab8`，分支`fix/child-sa-inbound-spi`。依据[RFC7296 §1.3.3](https://www.rfc-editor.org/rfc/rfc7296.html#section-1.3.3)与[§1.4.1](https://www.rfc-editor.org/rfc/rfc7296.html#section-1.4.1)，`pkg/swu/state_rekey.go`的REKEY_SA及旧SA Delete都改为本端入向SPI，并在既有公开换钥准入中要求完整双向SA。
+
+直接生产加密报文回归先复现REKEY错误方向/缺入向SA仍发送；修正REKEY后，XFRM/非XFRM两场景独立复现旧Delete错误方向，再修正Delete。`state_rekey_commit_test.go`与`state_rekey_rejection_test.go`原来固定出向SPI的断言已按上述标准改为入向，其他报价、拒绝不提交、内核失败传播、无Delete和冷却期断言全部保留；新`state_rekey_spi_test.go`覆盖不同方向值及缺半对SA。没有复制外部实现或新引入依赖，MIT原文、版权、原模块路径与unknown上游来源保持。
+
+最终ChildRekey聚焦race/shuffle为36个通过事件；一次全库race/shuffle为602个通过事件、6个测试包通过、22个既有隔离内核opt-in测试/子例跳过，另2包无测试文件；全库vet/改动gofmt/diff空白通过。首聚焦中旧Notify14方向契约的失败已记录，未当全库失败/通过。回归用既有pipe传输输出真实加密字节并解码，不是运营商、真实SIM或Android内核验收；主仓固定真实提交与新自然实机结果归主仓任务记录，不预报成功。
+
 ## 历史：本地维护跨度（2026-09-15 首导前源码就绪核对）
 
 首次本地导入已经包含 A/B；之后的维护远不止两个修改。以下为可追溯的本地历史分组与测试入口，不是相对纯上游的完整 diff 或逐行法律审查，未找到的首次导入前来源继续 unknown。

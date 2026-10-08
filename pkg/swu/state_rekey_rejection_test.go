@@ -74,8 +74,8 @@ func TestChildRekeyPreservesState_whenProtectedNotify14(t *testing.T) {
 					t.Error("expected 32-byte nonce")
 				}
 				notify, ok := payloads[2].(*ikev2.EncryptedPayloadNotify)
-				if !ok || notify.NotifyType != ikev2.REKEY_SA || notify.ProtocolID != ikev2.ProtoESP || len(notify.SPI) != 4 || binary.BigEndian.Uint32(notify.SPI) != snap.out.SPI || len(notify.NotifyData) != 0 {
-					t.Error("current REKEY_SA outbound old-SPI direction changed")
+				if !ok || notify.NotifyType != ikev2.REKEY_SA || notify.ProtocolID != ikev2.ProtoESP || len(notify.SPI) != 4 || binary.BigEndian.Uint32(notify.SPI) != snap.in.SPI || len(notify.NotifyData) != 0 {
+					t.Error("REKEY_SA did not preserve the RFC 7296 inbound old-SPI direction")
 				}
 				tsi, ok := payloads[3].(*ikev2.EncryptedPayloadTS)
 				if !ok || !tsi.IsInitiator || !reflect.DeepEqual(tsi.TrafficSelectors, sess.tsr) {
