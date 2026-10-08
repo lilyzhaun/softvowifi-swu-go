@@ -27,7 +27,7 @@ func (s *Session) rekeyChildSA(ops childRekeyXFRMOps) error {
 	s.rekeyMu.Lock()
 	defer s.rekeyMu.Unlock()
 
-	if s.ChildSAOut == nil {
+	if s.ChildSAOut == nil || s.ChildSAIn == nil {
 		return errors.New("没有活动的 CHILD_SA 可以 Rekey")
 	}
 
@@ -76,9 +76,9 @@ func (s *Session) rekeyChildSA(ops childRekeyXFRMOps) error {
 	// 4. Nonce 载荷
 	noncePayload := &ikev2.EncryptedPayloadNonce{NonceData: newNonce}
 
-	// 5. REKEY_SA Notify (告知要 Rekey 哪个 SA)
+	// 5. RFC 7296 section 1.3.3 identifies our inbound SA in REKEY_SA.
 	oldSPIBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(oldSPIBytes, s.ChildSAOut.SPI)
+	binary.BigEndian.PutUint32(oldSPIBytes, s.ChildSAIn.SPI)
 	rekeyNotify := &ikev2.EncryptedPayloadNotify{
 		ProtocolID: ikev2.ProtoESP,
 		SPI:        oldSPIBytes,
@@ -270,8 +270,8 @@ func (s *Session) commitChildSARekey(next childSARekey, ops childRekeyXFRMOps) e
 	default:
 	}
 
-	// 同步发送删除旧 SA 的通知（不用 goroutine，避免 msgID 竞争）
-	if err := s.sendDeleteChildSA([]uint32{oldOutSPI}); err != nil {
+	// RFC 7296 section 1.4.1 deletes our old inbound SA at the peer.
+	if err := s.sendDeleteChildSA([]uint32{oldInSPI}); err != nil {
 		s.Logger.Warn("发送旧 Child SA Delete 通知失败", logger.Err(err))
 	}
 

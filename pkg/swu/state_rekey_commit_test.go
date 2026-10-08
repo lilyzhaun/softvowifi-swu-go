@@ -96,6 +96,25 @@ func exerciseChildRekey(t *testing.T, sess *Session, invoke func() error) error 
 		if header.ExchangeType != ikev2.CREATE_CHILD_SA || header.NextPayload != ikev2.SK {
 			t.Fatal("expected encrypted CREATE_CHILD_SA request")
 		}
+		_, payloads, err := sess.decryptAndParse(request)
+		if err != nil {
+			t.Fatalf("REKEY request decode: %v", err)
+		}
+		found := false
+		for _, payload := range payloads {
+			notify, ok := payload.(*ikev2.EncryptedPayloadNotify)
+			if !ok || notify.NotifyType != ikev2.REKEY_SA {
+				continue
+			}
+			// RFC 7296 section 1.3.3: the initiator's inbound ESP SPI.
+			if found || notify.ProtocolID != ikev2.ProtoESP || len(notify.SPI) != 4 || len(notify.NotifyData) != 0 || binary.BigEndian.Uint32(notify.SPI) != sess.ChildSAIn.SPI {
+				t.Fatal("REKEY_SA did not identify the initiator's inbound SA")
+			}
+			found = true
+		}
+		if !found {
+			t.Fatal("missing REKEY_SA notification")
+		}
 		if !sess.taskMgr.HandleResponse(header.MessageID, response) {
 			t.Fatal("response was not matched to real request")
 		}
@@ -172,7 +191,8 @@ func TestChildRekeyCallerCommitsOnceOnSuccess(t *testing.T) {
 					t.Fatalf("DELETE decode: %v", err)
 				}
 				deleted, ok := payloads[0].(*ikev2.EncryptedPayloadDelete)
-				if !ok || deleted.ProtocolID != ikev2.ProtoESP || deleted.NumSPIs != 1 || len(deleted.SPIs) != 4 || binary.BigEndian.Uint32(deleted.SPIs) != 101 {
+				// RFC 7296 section 1.4.1: retire our old inbound SPI, not the peer's.
+				if !ok || deleted.ProtocolID != ikev2.ProtoESP || deleted.NumSPIs != 1 || len(deleted.SPIs) != 4 || binary.BigEndian.Uint32(deleted.SPIs) != 102 {
 					t.Fatal("wrong old SA DELETE")
 				}
 			default:
