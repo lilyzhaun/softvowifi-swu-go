@@ -3,6 +3,7 @@ package swu
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -25,10 +26,11 @@ func (provider *akaWireSIM) CalculateAKA(rand, autn []byte) ([]byte, []byte, []b
 
 func Test_ConnectSendsIndependentAKAResponse_whenUDPPeerChallenges(t *testing.T) {
 	for _, scenario := range []struct {
-		size int
-		imei string
-	}{{4, ""}, {5, ""}, {8, ""}, {16, ""}, {8, "123456789012345"}} {
-		t.Run(fmt.Sprintf("RES%d/device_identity_%t", scenario.size, scenario.imei != ""), func(t *testing.T) {
+		size          int
+		imei          string
+		requestNotify uint16
+	}{{4, "", 0}, {5, "", 0}, {8, "", 0}, {16, "", 0}, {8, "123456789012345", 41101}, {8, "123456789012345", 16432}} {
+		t.Run(fmt.Sprintf("RES%d/device_identity_%t/notify%d", scenario.size, scenario.imei != "", scenario.requestNotify), func(t *testing.T) {
 			size := scenario.size
 			peer := newAKAWirePeer(t)
 			provider := &akaWireSIM{vectorSIM: vectorSIM{
@@ -66,10 +68,14 @@ func Test_ConnectSendsIndependentAKAResponse_whenUDPPeerChallenges(t *testing.T)
 			peer.negotiate(t)
 			initial := peer.decrypt(t, peer.receive(t))
 			if scenario.imei != "" {
-				if len(initial) != 9 || initial[8].kind != 41 || !bytes.Equal(initial[8].body, referenceHex(t, "0000a08d00090121436587092143f5")) {
-					t.Fatal("AUTH1 must append exactly one type-1 IMEI device identity notification")
+				if len(initial) != 8 {
+					t.Fatal("AUTH1 must not disclose configured device identity without a request")
 				}
-				initial = initial[:8]
+				for _, payload := range initial {
+					if bytes.Contains(payload.body, referenceHex(t, "21436587092143f5")) {
+						t.Fatal("unsolicited IMEI leaked into the initial UDP request")
+					}
+				}
 			}
 			assertAKAWireInitial(t, initial)
 			peer.send(t, peer.protect(t, []akaWirePayload{
@@ -88,6 +94,19 @@ func Test_ConnectSendsIndependentAKAResponse_whenUDPPeerChallenges(t *testing.T)
 			}
 			if err := verifyAKAWireMAC(actual, keys[16:32]); err != nil {
 				t.Fatal(err)
+			}
+			if scenario.imei != "" {
+				// Request only after the independently verified AKA challenge.
+				// Keep the configured value available for the existing reply path.
+				request := referenceHex(t, "0000a08d000101")
+				binary.BigEndian.PutUint16(request[2:4], scenario.requestNotify)
+				peer.send(t, peer.protect(t, []akaWirePayload{{kind: 41, body: request}}))
+				reply := peer.decrypt(t, peer.receive(t))
+				wantReply := referenceHex(t, "0100a08d00090121436587092143f5")
+				binary.BigEndian.PutUint16(wantReply[2:4], scenario.requestNotify)
+				if len(reply) != 1 || reply[0].kind != 41 || !bytes.Equal(reply[0].body, wantReply) {
+					t.Fatal("requested type-1 device identity reply changed or was omitted")
+				}
 			}
 			peer.send(t, peer.protect(t, []akaWirePayload{{kind: 48, body: []byte{4, 0xa7, 0, 4}}}))
 			select {
