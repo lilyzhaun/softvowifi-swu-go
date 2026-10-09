@@ -984,6 +984,11 @@ func (s *Session) handleIKEAuthFinalResp(data []byte) error {
 		return fmt.Errorf("SESSION_RESUME AUTH signed material not implemented: %w", ErrResumeAuthUnsupported)
 	}
 	if !ikeAuthHasChildSA(payloads) {
+		// A final error (notably address allocation failure) has no Child SA.
+		// Preserve the rejection instead of asking for another initiator AUTH.
+		if rej := ikeAuthErrorNotify(payloads); rej != nil {
+			return rej
+		}
 		if err := s.captureEAPIDr(payloads); err != nil {
 			return err
 		}
