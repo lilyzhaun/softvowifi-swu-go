@@ -31,6 +31,14 @@
 
 最终ChildRekey聚焦race/shuffle为36个通过事件；一次全库race/shuffle为602个通过事件、6个测试包通过、22个既有隔离内核opt-in测试/子例跳过，另2包无测试文件；全库vet/改动gofmt/diff空白通过。首聚焦中旧Notify14方向契约的失败已记录，未当全库失败/通过。回归用既有pipe传输输出真实加密字节并解码，不是运营商、真实SIM或Android内核验收；主仓固定真实提交与新自然实机结果归主仓任务记录，不预报成功。
 
+## 2026-10-10：通用IKE COOKIE重试首载荷
+
+负责人`lilyzhaun`，基准`27a55cc9f708f8381e226cf5efed1fc5ef44c105`，分支`fix/ike-cookie-first-payload`。依据[RFC7296 §2.6](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.6)，`pkg/swu/state_init.go`仅将重试COOKIE移到第一个载荷，初次请求顺序及其他SPI/KE/Nonce/报价/FRAG/NAT-D均不改变；没有运营商、国家、域名或SIM特判。
+
+新`state_init_cookie_order_test.go`先在原生产builder的两种报价布局/1、20、64字节合成COOKIE及正常Connect的真实loopback UDP路径观察明确RED；最小顺序修正后转绿。回归还比较Cookie之后的其他载荷字节、头部身份/消息号、连续不同Cookie不叠加、不推进鉴权状态；不是只返回200的fixture或设备认证证明。已有COOKIE/NAT-D/报价/redirect守卫断言保留。
+
+最终6测试包/610通过事件、22既有隔离内核opt-in跳过，另2包无测试文件，全库race/shuffle及vet通过。原MIT/版权、模块路径、依赖与unknown上游来源不变，没有复制外部代码。主仓仍需实际远端版本/pin、完整构建与设备鉴权，维护库通过不预报运营商注册成功；最终源码交付回执归本修补PR。
+
 ## 历史：本地维护跨度（2026-09-15 首导前源码就绪核对）
 
 首次本地导入已经包含 A/B；之后的维护远不止两个修改。以下为可追溯的本地历史分组与测试入口，不是相对纯上游的完整 diff 或逐行法律审查，未找到的首次导入前来源继续 unknown。

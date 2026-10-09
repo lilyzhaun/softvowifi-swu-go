@@ -133,9 +133,9 @@ func (s *Session) buildIKESAInitPacket() ([]byte, error) {
 		NotifyType: ikev2.IKEV2_FRAGMENTATION_SUPPORTED,
 	}
 
-	// 顺序: SA, KE, Nonce, FRAG, [COOKIE], NAT_SRC, NAT_DST
+	// RFC 7296 §2.6: COOKIE is first on retry; all other payloads stay unchanged.
 
-	payloads := []ikev2.Payload{saPayload, kePayload, noncePayload, fragNotify}
+	var payloads []ikev2.Payload
 	if s.sendCookie && len(s.cookie) > 0 {
 		payloads = append(payloads, &ikev2.EncryptedPayloadNotify{
 			ProtocolID: 0,
@@ -143,7 +143,7 @@ func (s *Session) buildIKESAInitPacket() ([]byte, error) {
 			NotifyData: s.cookie,
 		})
 	}
-	payloads = append(payloads, natSrcPayload, natDstPayload)
+	payloads = append(payloads, saPayload, kePayload, noncePayload, fragNotify, natSrcPayload, natDstPayload)
 
 	packet := ikev2.NewIKEPacket()
 	packet.Header.SPIi = s.SPIi
