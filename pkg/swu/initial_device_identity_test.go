@@ -23,7 +23,7 @@ func initialIdentityBaseline(t *testing.T) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	baseline := referenceHex(t, strings.TrimSpace(string(fixture)))
+	baseline := withSHA512Offer(t, referenceHex(t, strings.TrimSpace(string(fixture))))
 	baseline[len(baseline)-12] = 0
 	return baseline
 }
@@ -60,28 +60,28 @@ func Test_InitialDeviceIdentity_whenConfiguredChangesOnlyAppendedNotify(t *testi
 		t.Fatal("15-digit IMEI must use identity type 1, not IMEISV type 2")
 	}
 	assertAKAWireInitial(t, parsed[:8])
-	if len(plain) != 460 || !bytes.Equal(plain[441:], wantNotify) {
+	if len(plain) != 500 || !bytes.Equal(plain[481:], wantNotify) {
 		t.Fatal("only one 19-byte notify may be appended")
 	}
-	restored := bytes.Clone(plain[:441])
-	if restored[433] != 41 {
+	restored := bytes.Clone(plain[:481])
+	if restored[473] != 41 {
 		t.Fatal("INITIAL_CONTACT must link to the appended notification")
 	}
-	restored[433] = 0
+	restored[473] = 0
 	if !bytes.Equal(restored, baseline) {
-		t.Fatal("all 441 original plaintext bytes must remain identical after restoring the chain")
+		t.Fatal("all 481 baseline plaintext bytes must remain identical after restoring the chain")
 	}
 	assertDiagnosticPrivacy(t, output, []byte(syntheticInitialIMEI), wantNotify[11:], wantNotify[8:])
-	before := referenceHex(t, syntheticInitialType2Before)
-	if len(before) != len(plain) || before[451] != 2 || plain[451] != 1 {
-		t.Fatal("captured 460-byte baseline must differ at identity type 2 -> 1")
+	before := withSHA512Offer(t, referenceHex(t, syntheticInitialType2Before))
+	if len(before) != len(plain) || before[491] != 2 || plain[491] != 1 {
+		t.Fatal("extended 500-byte baseline must differ at identity type 2 -> 1")
 	}
 	for offset := range before {
-		if offset != 451 && before[offset] != plain[offset] {
+		if offset != 491 && before[offset] != plain[offset] {
 			t.Fatalf("unexpected change outside identity type at plaintext offset %d", offset)
 		}
 	}
-	t.Log("460-byte A/B: only plaintext offset 451 changed 2 -> 1; original 441 bytes preserved")
+	t.Log("500-byte A/B: only plaintext offset 491 changed 2 -> 1; baseline 481 bytes preserved")
 }
 
 func Test_InitialDeviceIdentity_whenEmptyPreservesLegacyBytes(t *testing.T) {

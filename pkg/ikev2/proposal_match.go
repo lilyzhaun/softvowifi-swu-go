@@ -247,6 +247,15 @@ func CreateMultiProposalESP(spi []byte) []*Proposal {
 	prop5.AddTransform(TransformTypeInteg, AUTH_HMAC_SHA1_96, 0)
 	prop5.AddTransform(TransformTypeESN, 0, 0)
 	proposals = append(proposals, prop5)
+	pNum++
+
+	// RFC 4868: offer the already-supported SHA2-512-256 integrity suite
+	// without changing the preference order of the existing complete offers.
+	prop6 := NewProposal(pNum, ProtoESP, spi)
+	prop6.AddTransformWithKeyLen(TransformTypeEncr, ENCR_AES_CBC, 256)
+	prop6.AddTransform(TransformTypeInteg, AUTH_HMAC_SHA2_512_256, 0)
+	prop6.AddTransform(TransformTypeESN, 0, 0)
+	proposals = append(proposals, prop6)
 
 	return proposals
 }
