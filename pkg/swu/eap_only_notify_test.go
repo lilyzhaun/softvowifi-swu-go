@@ -15,7 +15,7 @@ func Test_EAPOnlyAUTH1ChangesOnlyProtocolID_whenIdentityAndSPIAreFixed(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := referenceHex(t, strings.TrimSpace(string(fixture)))
+	before := withSHA512Offer(t, referenceHex(t, strings.TrimSpace(string(fixture))))
 	protocolOffset := len(before) - 12
 	if !bytes.Equal(before[protocolOffset-4:], []byte{41, 0, 0, 8, 1, 0, 0x40, 0x21, 0, 0, 0, 8, 0, 0, 0x40, 0}) {
 		t.Fatal("baseline must end with historical EAP_ONLY and unchanged INITIAL_CONTACT")
