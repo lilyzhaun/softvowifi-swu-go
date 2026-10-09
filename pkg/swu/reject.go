@@ -3,6 +3,8 @@ package swu
 import (
 	"encoding/binary"
 	"fmt"
+
+	"github.com/1239t/swu-go/pkg/ikev2"
 )
 
 // 3GPP TS 24.302 §7.2.2.2 错误码分类
@@ -70,6 +72,9 @@ func (e *RejectError) Error() string {
 	case RejectBackoff:
 		return fmt.Sprintf("ePDG 临时拒绝: type=%d backoff=%ds", e.NotifyType, e.Backoff)
 	default:
+		if e.NotifyType == ikev2.INTERNAL_ADDRESS_FAILURE {
+			return "ePDG address allocation failed: type=36 (INTERNAL_ADDRESS_FAILURE)"
+		}
 		return fmt.Sprintf("ePDG 拒绝: type=%d", e.NotifyType)
 	}
 }
