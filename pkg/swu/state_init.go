@@ -63,6 +63,21 @@ func (s *Session) buildIKESAInitPacket() ([]byte, error) {
 	}
 
 	proposals := ikev2.CreateIKEProposals(s.cfg.IKEProposalLayout, nil)
+	if number := s.cfg.InitialIKEProposalNumber; number != 0 {
+		var chosen *ikev2.Proposal
+		for _, proposal := range proposals {
+			if proposal.ProposalNum == number && len(proposal.Transforms) == 4 {
+				copy := *proposal
+				copy.ProposalNum = 1
+				chosen = &copy
+				break
+			}
+		}
+		if chosen == nil {
+			return nil, errors.New("initial IKE proposal is not a complete original offer")
+		}
+		proposals = []*ikev2.Proposal{chosen}
+	}
 
 	saPayload := &ikev2.EncryptedPayloadSA{
 		Proposals: proposals,

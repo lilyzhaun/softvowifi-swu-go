@@ -1,0 +1,12 @@
+# Initial IKE proposal numbering compatibility
+
+## Task and boundary
+
+- Maintainer: `lilyzhaun`; branch `fix/init-proposal-renumbering`, base `037032f`.
+- Scope: initial response diagnostics and a request-only single-offer option, with direct wire/UDP regressions. No carrier branches, new algorithms, authentication bypass, automatic library retries or persistent carrier learning.
+- A 2026-10-10 client observation found a response selecting the complete fourth offered suite (AES-CBC-256, SHA2-256 integrity/PRF, DH14) but returning proposal number 1. RFC 7296 §3.3.1 requires the original proposal number. The strict decoder must continue rejecting this response without committing responder state or sending IKE_AUTH.
+- A caller may abandon that exchange and create a fresh session advertising only the complete already-offered suite, numbered 1. The fresh response must pass the unchanged strict decoder and all normal authentication. A diagnostic hint alone is unauthenticated and is not proof of carrier identity or connection success.
+- `InitProposalNumberError` remains an `ErrInitResponse` rejection. The hint is emitted only after the response header is bound to the request and every unchanged strict selection check passes with one complete original proposal's number substituted for diagnostic purposes. The original packet/session is never altered or accepted.
+- `Config.InitialIKEProposalNumber` defaults to zero and affects request construction only. A nonzero value must name a complete proposal in the configured layout; it cannot request an unoffered suite or narrow a combined proposal by inventing a tuple. The library does not retry automatically; callers must create a new session and bound their compatibility attempt.
+- The two direct behavioral regressions failed against the original implementation, then passed. Existing cross-proposal, malformed response and no-SA-mutation rejection tests remain intact. Real UDP coverage includes both the unchanged four-proposal path and the explicit single fourth suite, with independent PRF+/ICV/decryption and tampered AUTH rejection.
+- Full `go test -p 1 -race -shuffle=on -count=1 -json ./...` recorded 634 passing test events and 22 existing opt-in kernel skips; `go vet -p 1 ./...` passed. The consuming project's integration/device validation is separate and pending. No private subscriber values or packet bytes belong here.

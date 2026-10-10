@@ -79,4 +79,8 @@ type Config struct {
 	// "" and "multiple-complete" emit four complete DH14 suites.
 	// "single-combined" emits one proposal containing that union.
 	IKEProposalLayout string
+	// InitialIKEProposalNumber restricts a fresh session to one complete proposal
+	// from that layout, renumbered 1. Zero preserves the original offer. This is
+	// request construction only: it does not relax selection or retry automatically.
+	InitialIKEProposalNumber uint8
 }

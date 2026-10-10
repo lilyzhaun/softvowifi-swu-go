@@ -22,8 +22,10 @@ func Test_ConnectProtectsAuth_whenUDPPeerSelectsFourthSuite(t *testing.T) {
 		name   string
 		reject bool
 		mutate func([]byte) []byte
+		single uint8
 	}{
 		{name: "fourth suite"},
+		{name: "fresh single fourth suite", single: 4},
 		{name: "cross proposal rejected", reject: true},
 		{name: "minor V reserved", mutate: initRFCReservedWire},
 		{name: "unknown noncritical", mutate: initUnknownNoncriticalWire},
@@ -39,6 +41,7 @@ func Test_ConnectProtectsAuth_whenUDPPeerSelectsFourthSuite(t *testing.T) {
 				t.Fatal(err)
 			}
 			sess := newInitTestSession("")
+			sess.cfg.InitialIKEProposalNumber = scenario.single
 			sess.cfg.LocalAddr = "127.0.0.1"
 			sess.cfg.LocalPort = 0
 			sess.cfg.EpDGAddr = "127.0.0.1"
@@ -56,7 +59,11 @@ func Test_ConnectProtectsAuth_whenUDPPeerSelectsFourthSuite(t *testing.T) {
 			}
 			offered := bytes.Clone(buffer[:count])
 			sa, ke, _ := decodeInitSA(t, offered)
-			if len(sa.Proposals) != 4 {
+			wantProposals := 4
+			if scenario.single != 0 {
+				wantProposals = 1
+			}
+			if len(sa.Proposals) != wantProposals {
 				t.Fatalf("wire proposal count = %d", len(sa.Proposals))
 			}
 			request, err := ikev2.DecodePacket(offered)
@@ -83,7 +90,7 @@ func Test_ConnectProtectsAuth_whenUDPPeerSelectsFourthSuite(t *testing.T) {
 			nr := bytes.Repeat([]byte{9}, 32)
 			response := ikev2.NewIKEPacket()
 			response.Header = &ikev2.IKEHeader{SPIi: request.Header.SPIi, SPIr: 4321, Version: 0x20, ExchangeType: ikev2.IKE_SA_INIT, Flags: ikev2.FlagResponse}
-			chosen := sa.Proposals[3]
+			chosen := sa.Proposals[len(sa.Proposals)-1]
 			if scenario.reject && scenario.mutate == nil {
 				chosen.ProposalNum = 1
 			}

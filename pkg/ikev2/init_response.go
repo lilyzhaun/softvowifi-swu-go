@@ -49,6 +49,9 @@ func DecodeInitResponse(data, offered []byte) (*IKEPacket, error) {
 		return nil, ErrInitResponse
 	}
 	if err := ValidateInitSelection(packet.Payloads, request.Payloads); err != nil {
+		if hint := initProposalNumberHint(packet.Payloads, request.Payloads); hint != nil {
+			return nil, hint
+		}
 		return nil, err
 	}
 	return packet, nil
