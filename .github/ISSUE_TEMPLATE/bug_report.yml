@@ -1,0 +1,51 @@
+name: Bug report / 缺陷报告
+description: Report a reproducible protocol/driver defect without live subscriber data.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        English or 简体中文 is welcome. Do not paste real SIM identifiers, AKA/IPsec
+        keys, tickets, tokens, full configuration, message bodies or raw captures.
+  - type: input
+    id: revision
+    attributes:
+      label: Maintained revision and dependency pins
+      description: SWu/netlink commits or effective Replace versions, not private credentials.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment and isolation
+      description: Go/OS/architecture/kernel, data plane and namespace/capabilities.
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Failure stage
+      options:
+        - INIT / COOKIE / DNS / transport
+        - EAP / IKE_AUTH
+        - Child SA / data plane / network ownership
+        - Rekey / liveness / shutdown
+        - Unknown or embedding API
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal synthetic reproduction and actual result
+      description: Include sanitized metadata, expected behavior and owned cleanup; distinguish tunnel from IMS/business success.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Privacy and safety
+      options:
+        - label: I removed live subscriber data, secrets, full configuration, captures and key logs.
+          required: true
+        - label: I will use private reporting for a vulnerability, not public exploit details.
+          required: true

@@ -1,161 +1,153 @@
-> **私有维护仓库（Issue 35，2026-09-15 核对）**：[lilyzhaun/softvowifi-swu-go](https://github.com/lilyzhaun/softvowifi-swu-go) 已存在且为 PRIVATE；`lilyzhaun` 为所有者和最终集成人，`newdamm` 负责经审查的维护 PR。本次 write 邀请状态为 **PENDINGINVITATION**，并非已取得访问权，须由 `newdamm` 本人接受；未授予 admin。
-> 模块路径 `github.com/1239t/swu-go` 不变。SoftVoWiFi 已验证的迁移候选固定消费 `a4e38cdc98372219f2dc60a7c59a9c0877ccda2c`（`v0.0.0-20260915090250-a4e38cdc9837`），不是最新维护 `main` HEAD。本次仅文档提交推进 `main`，不改变生产 pin、Go 源码、go.mod/go.sum 或许可证；主仓迁移仍待最终验收。当前 netlink 已固定到真实私有版本，不再依赖 `../netlink`，详见 [PROVENANCE.md](PROVENANCE.md)。
-> 首导源为 SoftVoWiFi `8ca6114de2c915473165bf0698a09ced0f9108e3` 的 `engine/third_party/swu-go`，私有首导提交为 `002f1eabfc8430e25ccb845e8b710e8c2bdb1d57`。这是独立私有快照导入，不宣称属于 GitHub fork network；纯上游来源仍 unknown，私有性不代表法律或公开发行放行。
-> 下方原 README 完整保留，其安装路径与功能描述均为历史说明，不代表当前集成或生产验收。原版权与 [LICENSE](LICENSE) 保留。迁移清单为主仓库 `engine/third_party/manifest.json`；流程见主仓库 `docs/第三方Go依赖维护与导出.md`。后续生产修改须另行审查、验证并更新固定版本，不能自动跟随维护 HEAD。
+# softvowifi-swu-go
 
-# swu-go
+[![CI](https://github.com/lilyzhaun/softvowifi-swu-go/actions/workflows/ci.yml/badge.svg)](https://github.com/lilyzhaun/softvowifi-swu-go/actions/workflows/ci.yml)
 
-纯 Go 实现的 SWu 客户端库，适用于 VoWiFi 建立到 ePDG (Evolved Packet Data Gateway) 的 IPSec 隧道。
+**English** · [简体中文](README.zh-CN.md)
 
-## 功能特性
+A public maintained Go SWu client library for negotiating an IPsec tunnel to an
+ePDG using IKEv2 and a caller-supplied SIM/USIM EAP-AKA provider. The original
+module/import path remains `github.com/1239t/swu-go`.
 
-### 核心协议
-- **IKEv2** — 完整实现 IKE_SA_INIT、IKE_AUTH、CREATE_CHILD_SA、INFORMATIONAL
-- **EAP-AKA 认证** — 支持 SIM/USIM 卡认证，含同步失败 (AUTS) 处理
-- **COOKIE 处理** — RFC 7296 §2.6 防 DoS 机制
-- **IKE Fragmentation** — RFC 7383 大消息分片传输，防止被防火墙丢弃
+This is an independent maintained snapshot, not an official upstream release or
+full upstream mirror. It is **not a standalone Wi-Fi Calling application**: it
+does not implement an IMS SIP registrar/client, SMS delivery, voice/media codecs,
+Android SIM provisioning, carrier entitlement or account activation.
 
-### SA 生命周期管理
-- **Child SA Rekey** — 主动 + 被动，含碰撞检测 (TryLock)
-- **IKE SA Rekey** — 主动 + 被动，DH 密钥交换刷新
-- **IKE Reauthentication** — RFC 7296 §2.8.3 完全重认证
-- **EAP-AKA Fast Re-auth** — RFC 4187 0-RTT 极速伪装重认证，免 SIM 强验
-- **Session Resumption** — RFC 5723 跨会话凭证漂流保护与快速恢复
-- **AUTH Lifetime** — RFC 4478 动态适配 ePDG 通告的 SA 生命周期
-- **Soft/Hard Expire** — XFRM 内核事件驱动的 SA 过期处理
-- **DPD** — RFC 3706 Dead Peer Detection
+## Scope and maintenance
 
-### 网络适应性
-- **Smart DPD** — 基于 XFRM 底层流量感知的智能死穴检测 (Dead Peer Detection)
-- **NAT-T** — ESP-in-UDP 封装 + Keepalive
-- **MOBIKE** — RFC 4555 网络切换（WiFi ↔ 4G）无感迁移
-- **IKE Redirect** — RFC 5685 ePDG 负载均衡重定向
-- **Message ID 同步** — RFC 6311 长连接 ID 同步
+The retained code includes IKEv2 payloads, AKA processing, ESP sockets/data planes,
+Linux network drivers and session lifecycle logic. Reviewed maintenance includes:
 
-### 数据平面
-- **XFRMI 模式** — 内核态 XFRM Interface（推荐，性能最优）
-- **TUN 模式** — 用户态 ESP 加解密
-- **可配置 Replay Window** — 支持 32/128/256 窗口大小
-- **ESN** — RFC 4303 64 位扩展序列号（可选）
-- **SA Direction** — `XFRMA_SA_DIR` 内核精细管理（Linux 6.x+）
+- COOKIE retries prepend the challenge without changing the original INIT offer.
+- Final IKE_AUTH rejection notifications are preserved instead of being hidden by
+  an incomplete-Child-SA error.
+- Configured equipment identity is sent on an existing gateway request path,
+  not unconditionally in the first IKE_AUTH.
+- Initial ESP offers include a complete AES-CBC256/HMAC-SHA2-512 combination.
+- Child-SA rekey/delete uses the local inbound SPI; policy/rule cleanup is scoped
+  to the owning session rather than another session's table.
 
-### 网络配置
-- **自动接口配置** — 策略路由、冲突路由清理、sysctl 管理
-- **IPv4/IPv6 双栈** — 完整双栈支持
-- **网络命名空间** — 可选的隔离网络环境
+See the source and [maintenance notes](PROVENANCE.md), including
+[COOKIE history](PROVENANCE.md#2026-10-10通用ike-cookie重试首载荷),
+[final rejection handling](docs/ike-auth-final-reject.md),
+[ESP offer coverage](docs/esp-sha512-offer.md) and
+[equipment identity timing](docs/request-driven-equipment-identity.md).
+Unit/loopback regressions are not proof of a live carrier session.
 
-## 安装
+## Important limits
 
-```bash
-go get github.com/iniwex5/swu-go
+This library is not presented as a fully audited, unattended production VPN.
+Do not infer complete responder certificate-chain/trust-anchor validation from
+successful AKA or final AUTH processing. Resumption rejects unverified AUTH
+material; the presence of ticket, fast-reauth, MOBIKE or rekey code does not prove
+all lifecycle paths, seamless migration, long-term stability or every proposal
+combination have been validated. Initial SHA2-512 offer coverage does not certify
+SHA2-512 rekey interoperability. No carrier/device support matrix is promised.
+
+Keep `DisableEAPMACValidation` and `EnableWiresharkKeyLog` disabled in normal use.
+Disabling authentication checks or exporting secrets is not a compatibility fix.
+Review the [security policy](SECURITY.md) before integrating with real subscribers.
+
+## Requirements
+
+- `go.mod` declares Go 1.24.0; CI uses Go 1.26 on Linux.
+- A legitimate `sim.SIMProvider` implementing `GetIMSI`, `CalculateAKA` and `Close`.
+  Read MCC/MNC and APN from your actual integration rather than guessing them;
+  pass the correct two- or three-digit MNC explicitly.
+- Linux kernel facilities appropriate to the selected data plane: XFRM interfaces
+  for `xfrmi`, or TUN and userspace ESP for `tun`.
+- Suitable privileges for network configuration and, where used, privileged UDP
+  ports. Isolate driver testing from the host's live network.
+
+Android/root/SIM access and complete rollback orchestration belong to the caller.
+
+## Use the maintained revision
+
+In an existing Go module, explicitly pin both SWu and its netlink dependency:
+
+```sh
+go mod edit -require=github.com/1239t/swu-go@v0.0.0-20261009235012-6fb3163569ae
+go mod edit -replace=github.com/1239t/swu-go=github.com/lilyzhaun/softvowifi-swu-go@v0.0.0-20261009235012-6fb3163569ae
+go mod edit -replace=github.com/iniwex5/netlink=github.com/lilyzhaun/softvowifi-netlink@v0.0.0-20260915075719-be8893d91893
+go mod download github.com/1239t/swu-go github.com/iniwex5/netlink
+go list -m -json github.com/1239t/swu-go github.com/iniwex5/netlink
 ```
 
-## 依赖
+Imports still use `github.com/1239t/swu-go/...`. A consuming **main module does
+not inherit dependency `replace` directives**, so the netlink replacement above
+is required even though this repository already has one in its own `go.mod`.
+The example is a reproducible maintained code pin, not a moving `main` dependency.
 
-- Go 1.24+
-- Linux（需要 XFRM / TUN/TAP / Netlink 支持）
-- Root 权限（网络配置需要）
-- [github.com/iniwex5/netlink](https://github.com/iniwex5/netlink) — vishvananda/netlink 的 fork，增加了 `XFRM_STATE_AF_UNSPEC`、`XFRMA_SA_DIR`、`ESN` 支持
+## Embedding API example
 
-## 配置项
-
-```go
-type Config struct {
-    EpDGAddr      string          // ePDG 地址
-    EpDGPort      uint16          // ePDG 端口 (默认 500)
-    APN           string          // 接入点名称
-    SIM           sim.SIMProvider // SIM 卡提供者
-    DataplaneMode string          // "xfrmi" (推荐) 或 "tun"
-    TUNName       string          // 接口设备名 (默认 "ipsec0")
-
-    // 流量与生存期管理
-    ReauthInterval int  // IKE SA 重认证间隔（秒），0=禁用
-    ReplayWindow   int  // XFRM 抗重放窗口 (默认 32, 建议 128/256)
-    EnableESN      bool // 启用 64 位扩展序列号 (默认 false)
-
-    // RFC 5723 Ticket 凭证漂流保护
-    ResumeTicket   []byte
-    ResumeOldSKd   []byte
-    OnTicketUpdate func(ticket, skd []byte)
-
-    // 0-RTT 极速重建缓存 (可选，对接外层应用存储)
-    FastReauthID       string // ePDG 赋予的下次断线重连假名
-    FastReauthMK       []byte // 上次全量认证协商的根密钥
-    FastReauthKAut     []byte
-    FastReauthKEncr    []byte
-    OnFastReauthUpdate func(reauthID string, mk, kAut, kEncr []byte)
-}
-```
-
-## 使用示例
+This is a compilable integration helper, **not a runnable fake-SIM demo**. The
+caller supplies a real authorized provider, correct subscription parameters and
+a context whose deadline/lifetime matches its application. Driver-enabled
+`Connect` performs real network operations. This maintenance validates the helper
+by compilation only; default CI does not execute it against real subscribers.
 
 ```go
-package main
+package integration
 
 import (
-    "context"
-    "github.com/iniwex5/swu-go/pkg/swu"
-    "github.com/iniwex5/swu-go/pkg/sim"
+	"context"
+
+	"github.com/1239t/swu-go/pkg/sim"
+	"github.com/1239t/swu-go/pkg/swu"
 )
 
-func main() {
-    simProvider := sim.NewATModem("/dev/ttyUSB2")
-
-    cfg := &swu.Config{
-        EpDGAddr:      "epdg.example.com",
-        APN:           "ims",
-        SIM:           simProvider,
-        DataplaneMode: "xfrmi",
-        TUNName:       "ims0",
-        ReplayWindow:  128,
-    }
-
-    session := swu.NewSession(cfg, nil)
-    defer session.Shutdown()
-
-    if err := session.Connect(context.Background()); err != nil {
-        panic(err)
-    }
-
-    // 会话建立后，XFRM 接口已配置完成
-    // 可以通过 ims0 接口访问 IMS 网络
-
-    session.WaitDone()
+func OpenTunnel(ctx context.Context, provider sim.SIMProvider,
+	epdg, apn, mcc, mnc string) (*swu.Session, error) {
+	cfg := &swu.Config{
+		EpDGAddr:      epdg,
+		EpDGPort:      500,
+		APN:           apn,
+		MCC:           mcc,
+		MNC:           mnc,
+		SIM:           provider,
+		EnableDriver:  true,
+		DataplaneMode: "xfrmi",
+		ReplayWindow:  128,
+	}
+	session := swu.NewSession(cfg, nil)
+	if err := session.Connect(ctx); err != nil {
+		session.Shutdown()
+		return nil, err
+	}
+	return session, nil
 }
 ```
 
-## 项目结构
+Retain the session while it is in use. On exit, use its shutdown/lifetime APIs,
+close provider resources owned by your integration and verify cleanup of owned
+interfaces, sockets, routes/rules and XFRM state. A canceled context or a return
+from `Shutdown` alone is not evidence that every kernel resource is gone. Tunnel
+establishment is not SIP registration, message delivery or an audible call.
 
-```
-pkg/
-├── crypto/     # 加密算法 (AES-CBC, AES-GCM, HMAC, DH, PRF)
-├── driver/     # 系统驱动
-│   ├── nettools.go    # 网络配置 (netlink API)
-│   ├── xfrm.go        # XFRM SA/SP/Interface 管理
-│   ├── xfrm_algo.go   # 算法 ID 映射
-│   ├── netns.go        # 网络命名空间
-│   └── tun.go          # TUN 设备
-├── eap/        # EAP-AKA 协议编解码
-├── ikev2/      # IKEv2 协议 (载荷编解码、常量、SA 协商)
-├── ipsec/      # ESP 数据平面与 Socket 管理
-├── logger/     # 日志封装 (zap)
-├── sim/        # SIM 卡接口 (AT 命令)
-└── swu/        # SWu 会话管理
-    ├── session.go          # 核心会话逻辑 + 数据平面配置
-    ├── config.go           # 配置结构体
-    ├── state_init.go       # IKE_SA_INIT + COOKIE + REDIRECT
-    ├── state_auth.go       # IKE_AUTH + EAP-AKA + AUTH_LIFETIME
-    ├── state_rekey.go      # Child SA Rekey (主动)
-    ├── state_rekey_ike.go  # IKE SA Rekey (主动 + 被动)
-    ├── ike_control.go      # ePDG 发起的请求分发 (Rekey/Delete/MID Sync)
-    ├── informational.go    # 智能流量感知 DPD、Delete 通知
-    ├── mobike.go           # MOBIKE 地址更新 (RFC 4555)
-    ├── fragment.go         # IKE Fragmentation (RFC 7383)
-    ├── cookie.go           # COOKIE 处理
-    ├── msg_handler.go      # 消息加解密与收发
-    └── retry.go            # 重传机制
+## Develop and test
+
+```sh
+git clone https://github.com/lilyzhaun/softvowifi-swu-go.git
+cd softvowifi-swu-go
+go test -p 1 -race -shuffle=on -count=1 -timeout=120s ./...
+go vet -p 1 ./...
 ```
 
-## 许可证
+Default CI uses synthetic vectors and local peers, not a real SIM, ePDG or phone.
+Kernel opt-in tests remain disabled (`ISSUE33_KERNEL_TEST` is not enabled); their
+skips are intentional coverage limits, not kernel acceptance. Privileged testing
+requires the documented isolation guards and explicit cleanup ownership. See
+[CONTRIBUTING.md](CONTRIBUTING.md) and the
+[issue templates](https://github.com/lilyzhaun/softvowifi-swu-go/issues/new/choose).
 
-MIT License
+## License and provenance
+
+The original [MIT LICENSE](LICENSE) and `Copyright (c) 2026 iniwex5` are unchanged.
+The exact original upstream revision/version remains **unknown**; no local import
+commit or current GitHub repository is substituted for that missing provenance.
+See [PROVENANCE.md](PROVENANCE.md). Dependencies retain their own licenses and
+source qualifications, including [softvowifi-netlink](https://github.com/lilyzhaun/softvowifi-netlink).
+
+The [historical README](docs/README-imported.md) is preserved as context. Its old
+module paths, private status and broad completeness/0-RTT claims are not current
+installation instructions or validated capability statements.

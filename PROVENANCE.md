@@ -1,5 +1,10 @@
 # swu-go 来源与自有维护迁移
 
+> 当前状态（2026-10-10）：本仓为PUBLIC，保留原module与MIT版权，是独立维护快照，
+> 不是上游GitHub fork network。下文日期化私有/邀请/旧pin说明只作历史；当前使用、
+> 后继维护说明与安全/覆盖边界见[README](README.md)及docs中的协议专题。
+> 原始上游commit/version仍unknown；本轮不改源码、依赖或原许可来填补它们。
+
 ## 已知与未知
 
 - 原 README 指向 <https://github.com/iniwex5/swu-go>，当前 `go.mod` 却声明 `github.com/1239t/swu-go`。两者不一致，不能据此推断实际下载来源。
