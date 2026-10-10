@@ -72,9 +72,10 @@ type Session struct {
 	natKeepaliveStarted bool
 
 	// strongSwan 风格时间戳——用于自适应 keepalive / DPD 按需检测
-	inboundActivityMu sync.RWMutex
-	lastInboundTime   time.Time // 最后收到入站 IKE/ESP 包的时间
-	lastOutboundTime  time.Time // 最后发出出站 IKE/keepalive 包的时间
+	inboundActivityMu  sync.RWMutex
+	outboundActivityMu sync.RWMutex // Protects the outgoing timestamp and debug packet/MID pair.
+	lastInboundTime    time.Time    // 最后收到入站 IKE/ESP 包的时间
+	lastOutboundTime   time.Time    // 最后发出出站 IKE/keepalive 包的时间
 
 	cpConfig *ikev2.CPConfig
 	tsi      []*ikev2.TrafficSelector
@@ -746,13 +747,12 @@ func (s *Session) startNATKeepalive(interval time.Duration) {
 	}
 
 	// 初始化出站时间戳
-	if s.lastOutboundTime.IsZero() {
-		s.lastOutboundTime = time.Now()
-	}
+	s.initializeOutboundActivity(time.Now())
 
 	go func() {
 		for {
-			diff := time.Since(s.lastOutboundTime)
+			lastOutbound := s.outboundActivityTime()
+			diff := time.Since(lastOutbound)
 
 			// 智能流量感知：去内核中捞一把最新的交互状态
 			if s.xfrmMgr != nil {
@@ -760,10 +760,10 @@ func (s *Session) startNATKeepalive(interval time.Duration) {
 					if useTime, err := s.xfrmMgr.GetSALastUsed(outsa.SPI, s.xfrmLocalIP, s.xfrmRemoteIP, netlink.XFRM_PROTO_ESP); err == nil && useTime > 0 {
 						// useTime 返回的是最近一次使用的 Unix Timestamp
 						lastUsedNetlink := time.Unix(int64(useTime), 0)
-						if lastUsedNetlink.After(s.lastOutboundTime) {
+						if lastUsedNetlink.After(lastOutbound) {
 							// 内核反馈：在那之后确实有跑过真实的业务包，无需发送无聊的探测单！
-							s.lastOutboundTime = lastUsedNetlink
-							diff = time.Since(s.lastOutboundTime)
+							s.recordOutboundActivity(lastUsedNetlink)
+							diff = time.Since(s.outboundActivityTime())
 						}
 					}
 				}
@@ -784,7 +784,7 @@ func (s *Session) startNATKeepalive(interval time.Duration) {
 				if err := sender.SendNATKeepalive(); err != nil {
 					s.Logger.Debug("NAT keepalive 发送失败", logger.Err(err))
 				} else {
-					s.lastOutboundTime = time.Now()
+					s.recordOutboundActivity(time.Now())
 				}
 				diff = 0
 			}
@@ -1765,10 +1765,13 @@ func (s *Session) sendEncryptedWithRetry(payloads []ikev2.Payload, exchangeType 
 
 	var packets [][]byte
 	var err error
+	// Allocate exactly once. Encryption can interleave another request's
+	// allocation; the global counter is never this transaction's identity.
+	msgID := s.NextSequenceNumber()
 
 	// IKE Fragmentation (RFC 7383): 如果消息过大且对端支持分片，则分片发送
 	if s.shouldFragment(payloads) {
-		packets, err = s.fragmentMessage(payloads, exchangeType)
+		packets, err = s.fragmentMessage(payloads, exchangeType, msgID)
 		if err != nil {
 			return nil, fmt.Errorf("IKE 分片失败: %v", err)
 		}
@@ -1776,8 +1779,6 @@ func (s *Session) sendEncryptedWithRetry(payloads []ikev2.Payload, exchangeType 
 
 	// 正常（非分片）发送或者分片返回空时退阶保护
 	if len(packets) == 0 {
-		// 先取 msgID 再加密，避免并发（keepalive/DPD/响应处理）自增 SequenceNumber 导致 msgID 错位
-		msgID := uint32(s.NextSequenceNumber())
 		packetData, err := s.encryptAndWrapWithMsgID(payloads, exchangeType, msgID, false)
 		if err != nil {
 			return nil, err
@@ -1785,12 +1786,6 @@ func (s *Session) sendEncryptedWithRetry(payloads []ikev2.Payload, exchangeType 
 		packets = [][]byte{packetData}
 	}
 
-	// 所有分片共享同一个 Message ID
-	msgID := s.SequenceNumber.Load() - 1
-
-	// 为后续重发准备调试状态
-	s.lastEncryptedMsg = packets[0]
-	s.lastEncryptedMsgID = msgID
 	logger.Debug("发送加密 IKE 消息（已送入并发重传窗口）",
 		logger.Uint64("spii", s.SPIi),
 		logger.Uint64("spir", s.SPIr),
@@ -1800,7 +1795,7 @@ func (s *Session) sendEncryptedWithRetry(payloads []ikev2.Payload, exchangeType 
 	)
 
 	// 更新出站时间戳（与 strongSwan stats[STAT_OUTBOUND] 一致）
-	s.lastOutboundTime = time.Now()
+	s.recordEncryptedRequest(packets[0], msgID, time.Now())
 
 	s.logSentEAP(payloads)
 	// 统一异步推送进滑动窗口队列（无论被切分成了多少包，TaskManager 的 Retry 会连带全部发射）
