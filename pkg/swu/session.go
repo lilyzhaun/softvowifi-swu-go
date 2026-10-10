@@ -45,7 +45,8 @@ type Session struct {
 	PRFAlg         crypto.PRF
 	DH             *crypto.DiffieHellman
 
-	Keys *ikev2.IKESAKeys
+	Keys                *ikev2.IKESAKeys
+	initialChildRequest []byte // Immutable CP/SA/TS bytes actually offered in AUTH1.
 
 	SequenceNumber atomic.Uint32 // IKE 消息 ID (利用原子操作支持并发挂窗)
 

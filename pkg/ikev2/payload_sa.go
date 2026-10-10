@@ -180,7 +180,7 @@ func DecodePayloadSA(data []byte) (*EncryptedPayloadSA, error) {
 		}
 		propLen := int(binary.BigEndian.Uint16(data[offset+2 : offset+4]))
 
-		if offset+propLen > len(data) {
+		if propLen < PROPOSAL_HEADER_LEN || offset+propLen > len(data) {
 			return nil, errors.New("SA 载荷对于 Proposal 主体来说太短")
 		}
 
@@ -190,27 +190,23 @@ func DecodePayloadSA(data []byte) (*EncryptedPayloadSA, error) {
 			return nil, err
 		}
 		proposals = append(proposals, prop)
-
-		// 检查是否是最后一个 proposal
-		if prop.LastProposal {
-			break
-		}
-		// 如果 Last 字段为 0 (Last) 但我们有更多数据，RFC 说是 2 (More)，等待。
-		// Proposal 头部字节 0: 0=Last, 2=More.
-		// 在 DecodeProposal 内部处理？不，我们需要检查这个字节。
-		if data[offset] == 0 {
-			break
-		}
-
 		offset += propLen
+		if prop.LastProposal {
+			if offset != len(data) {
+				return nil, errors.New("trailing SA proposal bytes")
+			}
+			return &EncryptedPayloadSA{Proposals: proposals}, nil
+		}
 	}
-
-	return &EncryptedPayloadSA{Proposals: proposals}, nil
+	return nil, errors.New("unclosed or empty SA proposal chain")
 }
 
 func DecodeProposal(data []byte) (*Proposal, error) {
 	if len(data) < PROPOSAL_HEADER_LEN {
 		return nil, errors.New("Proposal too short")
+	}
+	if int(binary.BigEndian.Uint16(data[2:4])) != len(data) || (data[0] != 0 && data[0] != 2) {
+		return nil, errors.New("invalid Proposal length or link")
 	}
 
 	p := &Proposal{
@@ -221,6 +217,9 @@ func DecodeProposal(data []byte) (*Proposal, error) {
 
 	spiSize := int(data[6])
 	transformCount := int(data[7])
+	if transformCount == 0 {
+		return nil, errors.New("empty Proposal transforms")
+	}
 
 	if len(data) < PROPOSAL_HEADER_LEN+spiSize {
 		return nil, errors.New("Proposal too short for SPI")
@@ -242,7 +241,7 @@ func DecodeProposal(data []byte) (*Proposal, error) {
 		}
 		transLen := int(binary.BigEndian.Uint16(data[offset+2 : offset+4]))
 
-		if offset+transLen > len(data) {
+		if transLen < TRANSFORM_HEADER_LEN || offset+transLen > len(data) {
 			return nil, errors.New("Proposal too short for Transform body")
 		}
 
@@ -250,16 +249,24 @@ func DecodeProposal(data []byte) (*Proposal, error) {
 		if err != nil {
 			return nil, err
 		}
+		if trans.LastTransform != (i == transformCount-1) {
+			return nil, errors.New("invalid Transform chain termination")
+		}
 		p.Transforms = append(p.Transforms, trans)
 		offset += transLen
 	}
-
+	if offset != len(data) {
+		return nil, errors.New("trailing Proposal transform bytes")
+	}
 	return p, nil
 }
 
 func DecodeTransform(data []byte) (*Transform, error) {
 	if len(data) < TRANSFORM_HEADER_LEN {
 		return nil, errors.New("Transform too short")
+	}
+	if int(binary.BigEndian.Uint16(data[2:4])) != len(data) || (data[0] != 0 && data[0] != 3) {
+		return nil, errors.New("invalid Transform length or link")
 	}
 
 	t := &Transform{

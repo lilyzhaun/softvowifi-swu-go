@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"time"
 
 	"github.com/1239t/swu-go/pkg/crypto"
 	"github.com/1239t/swu-go/pkg/eap"
@@ -123,6 +122,9 @@ func (s *Session) buildIKEAuthInitPayloads() ([]ikev2.Payload, error) {
 	}
 	if len(s.localIDiBody) == 0 {
 		s.localIDiBody = idiBody
+	}
+	if err := s.snapshotInitialChildRequest(cpPayload, saPayload, tsPayloadI, tsPayloadR); err != nil {
+		return nil, err
 	}
 	return payloads, nil
 }
@@ -994,29 +996,21 @@ func (s *Session) handleIKEAuthFinalResp(data []byte) error {
 		}
 		return errIKEAuthNeedInitiatorAUTH
 	}
-	if err := s.verifyPostEAPResponderAUTH(payloads); err != nil {
+	idrBody, err := s.verifyPostEAPResponderAUTH(payloads)
+	if err != nil {
+		return err
+	}
+	selection, err := s.selectInitialChild(payloads)
+	if err != nil {
 		return err
 	}
 
-	var saPayload *ikev2.EncryptedPayloadSA
-	var cpPayload *ikev2.EncryptedPayloadCP
-	var tsiPayload *ikev2.EncryptedPayloadTS
-	var tsrPayload *ikev2.EncryptedPayloadTS
-	var kePayload *ikev2.EncryptedPayloadKE
+	lifetime, mobike := s.authLifetime, s.mobikeSupported
+	var ticket []byte
+	var redirect *RedirectError
+	seenNotify := map[uint16]bool{}
 	for _, pl := range payloads {
 		switch p := pl.(type) {
-		case *ikev2.EncryptedPayloadSA:
-			saPayload = p
-		case *ikev2.EncryptedPayloadKE:
-			kePayload = p
-		case *ikev2.EncryptedPayloadCP:
-			cpPayload = p
-		case *ikev2.EncryptedPayloadTS:
-			if p.IsInitiator {
-				tsiPayload = p
-			} else {
-				tsrPayload = p
-			}
 		case *ikev2.EncryptedPayloadNotify:
 			if p.NotifyType < 16384 {
 				// 3GPP TS 24.302 §7.2.2.2 错误码分类
@@ -1032,87 +1026,49 @@ func (s *Session) handleIKEAuthFinalResp(data []byte) error {
 				logger.Int("type", int(p.NotifyType)),
 				logger.Int("dataLen", len(p.NotifyData)))
 			// RFC 4478: AUTH_LIFETIME — ePDG 通告 IKE SA 最大生存时间（秒）
-			if p.NotifyType == ikev2.AUTH_LIFETIME && len(p.NotifyData) >= 4 {
-				lifetime := binary.BigEndian.Uint32(p.NotifyData[:4])
-				s.authLifetime = lifetime
-				s.Logger.Info("ePDG 通告 AUTH_LIFETIME",
-					logger.Uint32("seconds", lifetime),
-					logger.String("duration", (time.Duration(lifetime)*time.Second).String()))
+			if p.NotifyType == ikev2.AUTH_LIFETIME || p.NotifyType == ikev2.MOBIKE_SUPPORTED || p.NotifyType == ikev2.TICKET_OPAQUE || p.NotifyType == ikev2.REDIRECT {
+				if p.ProtocolID != 0 || len(p.SPI) != 0 || seenNotify[p.NotifyType] {
+					return errInitialChild
+				}
+				seenNotify[p.NotifyType] = true
+			}
+			if p.NotifyType == ikev2.AUTH_LIFETIME {
+				if len(p.NotifyData) != 4 {
+					return errInitialChild
+				}
+				lifetime = binary.BigEndian.Uint32(p.NotifyData)
 			}
 			// RFC 5685: REDIRECT
 			if p.NotifyType == ikev2.REDIRECT {
 				addr, err := ParseRedirectData(p.NotifyData)
 				if err != nil {
-					s.Logger.Warn("解析 REDIRECT 数据失败", logger.Err(err))
+					return errInitialChild
 				} else {
-					return &RedirectError{NewAddr: addr}
+					redirect = &RedirectError{NewAddr: addr}
 				}
 			}
 			// RFC 4555: MOBIKE_SUPPORTED
 			if p.NotifyType == ikev2.MOBIKE_SUPPORTED {
-				s.mobikeSupported = true
-				s.Logger.Info("ePDG 支持 MOBIKE")
+				if len(p.NotifyData) != 0 {
+					return errInitialChild
+				}
+				mobike = true
 			}
 			// RFC 5723: Session Resumption
-			if p.NotifyType == ikev2.TICKET_OPAQUE && len(p.NotifyData) > 0 {
-				s.resumeTicket = make([]byte, len(p.NotifyData))
-				copy(s.resumeTicket, p.NotifyData)
-				if s.Keys != nil && len(s.Keys.SK_d) > 0 {
-					s.resumeOldSKd = make([]byte, len(s.Keys.SK_d))
-					copy(s.resumeOldSKd, s.Keys.SK_d)
-					s.Logger.Info("成功提取到会话恢复车票", logger.Int("ticketLen", len(s.resumeTicket)))
-					if s.cfg.OnTicketUpdate != nil {
-						s.cfg.OnTicketUpdate(s.resumeTicket, s.resumeOldSKd)
-					}
+			if p.NotifyType == ikev2.TICKET_OPAQUE {
+				if len(p.NotifyData) == 0 {
+					return errInitialChild
 				}
+				ticket = append([]byte(nil), p.NotifyData...)
 			}
 		}
 	}
-
-	if saPayload == nil || len(saPayload.Proposals) == 0 {
-		return errors.New("IKE_AUTH 最终响应缺少 Child SA")
+	if redirect != nil {
+		return redirect
 	}
 
-	respProp := saPayload.Proposals[0]
-	if len(respProp.SPI) < 4 {
-		return errors.New("IKE_AUTH 最终响应的 Child SA SPI 缺失")
-	}
-	remoteSPI := binary.BigEndian.Uint32(respProp.SPI[:4])
-
-	var encrID uint16
-	var encrKeyLenBits int
-	var integID uint16
-	var dhID uint16
-	for _, t := range respProp.Transforms {
-		if t.Type == ikev2.TransformTypeEncr {
-			encrID = uint16(t.ID)
-			for _, a := range t.Attributes {
-				if a.Type == ikev2.AttributeKeyLength {
-					encrKeyLenBits = int(a.Val)
-				}
-			}
-		}
-		if t.Type == ikev2.TransformTypeInteg {
-			integID = uint16(t.ID)
-		}
-		if t.Type == ikev2.TransformTypeDH {
-			dhID = uint16(t.ID)
-		}
-		// ESN Transform: ID=1 表示使用 ESN，ID=0 表示不使用
-		if t.Type == ikev2.TransformTypeESN && t.ID == 1 {
-			s.childESN = true
-			s.Logger.Info("ePDG 选择了 ESN (扩展序列号)")
-		}
-	}
-	if encrID == 0 {
-		return errors.New("IKE_AUTH 最终响应缺少加密算法选择")
-	}
-
-	s.Logger.Info("ePDG_SA_AUTH: IPsec ESP (Child SA) 算法协商成功",
-		logger.String("encr", ikev2.EncrToString(encrID)),
-		logger.String("integ", ikev2.IntegToString(integID)),
-		logger.Bool("esn", s.childESN),
-	)
+	remoteSPI := binary.BigEndian.Uint32(selection.proposal.SPI)
+	encrID, integID, encrKeyLenBits := selection.encr, selection.integ, selection.keyBits
 
 	childEnc, err := crypto.GetEncrypterWithKeyLen(encrID, encrKeyLenBits)
 	if err != nil {
@@ -1138,15 +1094,6 @@ func (s *Session) handleIKEAuthFinalResp(data []byte) error {
 	seed := make([]byte, 0, len(s.ni)+len(s.nr))
 	seed = append(seed, s.ni...)
 	seed = append(seed, s.nr...)
-	if dhID != 0 {
-		if s.childDH == nil || kePayload == nil || len(kePayload.KEData) == 0 {
-			return errors.New("Child SA 需要 PFS，但缺少 KE 载荷")
-		}
-		if _, err := s.childDH.ComputeSharedSecret(kePayload.KEData); err != nil {
-			return fmt.Errorf("Child SA DH 计算失败: %v", err)
-		}
-		seed = append(seed, s.childDH.SharedKey...)
-	}
 
 	keyMat, err := crypto.PrfPlus(s.PRFAlg, s.Keys.SK_d, seed, keyMatLen)
 	if err != nil {
@@ -1168,23 +1115,20 @@ func (s *Session) handleIKEAuthFinalResp(data []byte) error {
 		inIntegKey = keyMat[cursor : cursor+integKeyLen]
 	}
 
-	if s.childSPI == 0 {
-		return errors.New("本端 Child SA SPI 未初始化")
-	}
-
+	var childOut, childIn *ipsec.SecurityAssociation
 	if isAEAD {
-		s.ChildSAOut = ipsec.NewSecurityAssociation(remoteSPI, childEnc, outEncKey, nil)
-		s.ChildSAOut.RemoteSPI = s.childSPI
-
-		s.ChildSAIn = ipsec.NewSecurityAssociation(s.childSPI, childEnc, inEncKey, nil)
-		s.ChildSAIn.RemoteSPI = remoteSPI
+		childOut = ipsec.NewSecurityAssociation(remoteSPI, childEnc, outEncKey, nil)
+		childIn = ipsec.NewSecurityAssociation(s.childSPI, childEnc, inEncKey, nil)
 	} else {
-		s.ChildSAOut = ipsec.NewSecurityAssociationCBC(remoteSPI, childEnc, outEncKey, integAlg, outIntegKey)
-		s.ChildSAOut.RemoteSPI = s.childSPI
-
-		s.ChildSAIn = ipsec.NewSecurityAssociationCBC(s.childSPI, childEnc, inEncKey, integAlg, inIntegKey)
-		s.ChildSAIn.RemoteSPI = remoteSPI
+		childOut = ipsec.NewSecurityAssociationCBC(remoteSPI, childEnc, outEncKey, integAlg, outIntegKey)
+		childIn = ipsec.NewSecurityAssociationCBC(s.childSPI, childEnc, inEncKey, integAlg, inIntegKey)
 	}
+	childOut.RemoteSPI = s.childSPI
+	childIn.RemoteSPI = remoteSPI
+
+	// All validation and key derivation finished. No error paths or external
+	// callbacks may observe a partially committed initial Child transaction.
+	s.ChildSAOut, s.ChildSAIn = childOut, childIn
 	if s.ChildSAsIn != nil {
 		s.ChildSAsIn[s.childSPI] = s.ChildSAIn
 	}
@@ -1193,63 +1137,25 @@ func (s *Session) handleIKEAuthFinalResp(data []byte) error {
 	s.childEncrID = encrID
 	s.childIntegID = integID
 	s.childEncrKeyLenBits = encrKeyLenBits
+	s.childESN = false
+	s.cpConfig = selection.cp
+	s.tsi, s.tsr = selection.tsi, selection.tsr
+	s.peerIDrBody = append([]byte(nil), idrBody...)
+	s.authLifetime, s.mobikeSupported = lifetime, mobike
+	if ticket != nil {
+		s.resumeTicket = ticket
+		s.resumeOldSKd = append([]byte(nil), s.Keys.SK_d...)
+	}
+	s.childOutPolicies = append(s.childOutPolicies, childOutPolicy{saOut: childOut, tsr: s.tsr})
 
 	if s.ws != nil {
 		s.ws.LogChildSA(s.childSPI, remoteSPI, s.cfg.LocalAddr, s.cfg.EpDGAddr, inEncKey, outEncKey, encrID)
 	}
 
-	if cpPayload != nil {
-		if cpPayload.Attributes != nil {
-			types := make([]int, 0, len(cpPayload.Attributes))
-			for _, a := range cpPayload.Attributes {
-				if a == nil {
-					continue
-				}
-				types = append(types, int(a.Type))
-			}
-			s.Logger.Debug("CP 属性类型", logger.Any("types", types))
-		}
-		s.cpConfig = ikev2.ParseCPConfig(cpPayload)
-		if s.cpConfig != nil {
-			toStrings := func(ips []net.IP) []string {
-				out := make([]string, 0, len(ips))
-				for _, ip := range ips {
-					if ip == nil {
-						continue
-					}
-					out = append(out, ip.String())
-				}
-				return out
-			}
-			ipv4 := ""
-			if len(s.cpConfig.IPv4Addresses) > 0 && s.cpConfig.IPv4Addresses[0] != nil {
-				ipv4 = s.cpConfig.IPv4Addresses[0].String()
-			}
-			ipv6 := ""
-			if len(s.cpConfig.IPv6Addresses) > 0 && s.cpConfig.IPv6Addresses[0] != nil {
-				ipv6 = s.cpConfig.IPv6Addresses[0].String()
-			}
-			s.Logger.Debug("CP 配置已下发",
-				logger.String("ipv4", ipv4),
-				logger.String("ipv6", ipv6),
-				logger.Int("dns_v4", len(s.cpConfig.IPv4DNS)),
-				logger.Int("dns_v6", len(s.cpConfig.IPv6DNS)),
-				logger.Int("pcscf_v4", len(s.cpConfig.IPv4PCSCF)),
-				logger.Int("pcscf_v6", len(s.cpConfig.IPv6PCSCF)),
-				logger.Any("pcscf_v4_ips", toStrings(s.cpConfig.IPv4PCSCF)),
-				logger.Any("pcscf_v6_ips", toStrings(s.cpConfig.IPv6PCSCF)),
-			)
-		}
+	if ticket != nil && s.cfg.OnTicketUpdate != nil {
+		s.cfg.OnTicketUpdate(append([]byte(nil), ticket...), append([]byte(nil), s.resumeOldSKd...))
 	}
-	if tsiPayload != nil {
-		s.tsi = tsiPayload.TrafficSelectors
-	}
-	if tsrPayload != nil {
-		s.tsr = tsrPayload.TrafficSelectors
-	}
-	if len(s.tsr) > 0 && s.ChildSAOut != nil {
-		s.childOutPolicies = append(s.childOutPolicies, childOutPolicy{saOut: s.ChildSAOut, tsr: s.tsr})
-	}
+	s.Logger.Info("ePDG_SA_AUTH: IPsec ESP (Child SA) 算法协商成功", logger.String("encr", ikev2.EncrToString(encrID)), logger.String("integ", ikev2.IntegToString(integID)), logger.Bool("esn", false))
 
 	s.Logger.Debug("Child SA 已建立", logger.Uint32("localSPI", s.childSPI), logger.Uint32("remoteSPI", remoteSPI))
 	return nil

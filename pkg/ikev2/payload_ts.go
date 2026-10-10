@@ -150,6 +150,8 @@ func DecodePayloadTS(data []byte, isInitiator bool) (*EncryptedPayloadTS, error)
 		})
 		offset += length
 	}
-
+	if offset != len(data) {
+		return nil, errors.New("trailing TS selector bytes")
+	}
 	return out, nil
 }

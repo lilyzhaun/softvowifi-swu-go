@@ -117,33 +117,32 @@ func parseSingleSharedKeyAUTH(payloads []ikev2.Payload) (*ikev2.EncryptedPayload
 	return found, nil
 }
 
-func (s *Session) verifyPostEAPResponderAUTH(payloads []ikev2.Payload) error {
+func (s *Session) verifyPostEAPResponderAUTH(payloads []ikev2.Payload) ([]byte, error) {
 	if s.PRFAlg == nil || s.Keys == nil || len(s.Keys.SK_pr) == 0 {
-		return authFail("msk")
+		return nil, authFail("msk")
 	}
 	if err := requirePostEAPMSK(s.MSK); err != nil {
-		return err
+		return nil, err
 	}
 	if len(s.saInitResp) == 0 || len(s.ni) == 0 {
-		return authFail("mismatch")
+		return nil, authFail("mismatch")
 	}
 	auth, err := parseSingleSharedKeyAUTH(payloads)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	idrBody, err := s.lookupIDrBody(payloads)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	expected, err := computeResponderIKEAuthData(s.PRFAlg, s.MSK, s.Keys.SK_pr, idrBody, s.saInitResp, s.ni)
 	if err != nil {
-		return fmt.Errorf("compute responder AUTH: %w", err)
+		return nil, fmt.Errorf("compute responder AUTH: %w", err)
 	}
 	if !hmac.Equal(expected, auth.AuthData) {
-		return authFail("mismatch")
+		return nil, authFail("mismatch")
 	}
-	s.peerIDrBody = append([]byte(nil), idrBody...)
-	return nil
+	return idrBody, nil
 }
 
 func (s *Session) processIKEAuthEAPRound(payloads []ikev2.Payload) ([]ikev2.Payload, bool, error) {
@@ -216,6 +215,7 @@ func (s *Session) completePostEAP(respData []byte, sendFinal func([]ikev2.Payloa
 }
 
 func (s *Session) resetIKEAuthTranscripts() {
+	s.initialChildRequest = nil
 	s.localIDiBody = nil
 	s.saInitResp = nil
 	s.peerIDrBody = nil

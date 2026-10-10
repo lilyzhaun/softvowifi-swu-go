@@ -109,13 +109,9 @@ func decodeCPAttribute(data []byte) (*CPAttribute, int, error) {
 	}
 
 	rawType := binary.BigEndian.Uint16(data[0:2])
-	af := (rawType & 0x8000) != 0
 	attrType := rawType & 0x7fff
-	if af {
-		v := make([]byte, 2)
-		copy(v, data[2:4])
-		return &CPAttribute{Type: attrType, Value: v}, 4, nil
-	}
+	// Unlike Transform attributes, CP's high bit is reserved and ignored.
+	// All CP attributes remain TLV (RFC7296 section 3.15.1).
 
 	attrLen := int(binary.BigEndian.Uint16(data[2:4]))
 
