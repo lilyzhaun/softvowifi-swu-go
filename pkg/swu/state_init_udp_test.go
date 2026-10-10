@@ -110,8 +110,12 @@ func Test_ConnectProtectsAuth_whenUDPPeerSelectsFourthSuite(t *testing.T) {
 				t.Fatal(err)
 			}
 			if scenario.reject {
-				if err := <-finished; !errors.Is(err, ikev2.ErrInitResponse) {
-					t.Fatalf("connect rejection: %v", err)
+				// A structurally invalid response is discarded without consuming
+				// the request. A strict numbering hint alone ends this Session.
+				if scenario.mutate == nil {
+					if err := <-finished; !errors.Is(err, ikev2.ErrInitResponse) {
+						t.Fatalf("connect rejection: %v", err)
+					}
 				}
 				if err := peer.SetReadDeadline(time.Now().Add(30 * time.Millisecond)); err != nil {
 					t.Fatal(err)
@@ -120,6 +124,17 @@ func Test_ConnectProtectsAuth_whenUDPPeerSelectsFourthSuite(t *testing.T) {
 					t.Fatal("unexpected IKE_AUTH after invalid selection")
 				} else if failure, ok := err.(net.Error); !ok || !failure.Timeout() {
 					t.Fatal(err)
+				}
+				if scenario.mutate != nil {
+					select {
+					case err := <-finished:
+						t.Fatalf("invalid packet consumed pending: %v", err)
+					default:
+					}
+					cancel()
+					if err := <-finished; !errors.Is(err, context.Canceled) {
+						t.Fatalf("cancel after discarded response: %v", err)
+					}
 				}
 				if sess.SPIr != 0 || sess.Keys != nil {
 					t.Fatal("rejected connect changed SA")
@@ -168,8 +183,10 @@ func Test_ConnectProtectsAuth_whenUDPPeerSelectsFourthSuite(t *testing.T) {
 				t.Fatal("peer cannot decrypt initial AUTH identity")
 			}
 			receiver := newInitTestSession("")
+			receiver.SPIi, receiver.SPIr = header.SPIi, header.SPIr
+			receiver.localResponder = true
 			receiver.EncAlg, receiver.IntegAlg = sess.EncAlg, sess.IntegAlg
-			receiver.Keys = &ikev2.IKESAKeys{SK_er: keys[96:128], SK_ar: keys[32:64]}
+			receiver.Keys = &ikev2.IKESAKeys{SK_ei: keys[96:128], SK_ai: keys[32:64]}
 			if _, _, err := receiver.decryptAndParse(auth); err != nil {
 				t.Fatalf("valid protected AUTH: %v", err)
 			}

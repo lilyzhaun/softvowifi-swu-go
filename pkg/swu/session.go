@@ -37,12 +37,13 @@ type Session struct {
 	net    NetTools
 
 	// IKE SA 状态
-	SPIi     uint64
-	SPIr     uint64
-	EncAlg   crypto.Encrypter
-	IntegAlg crypto.IntegrityAlgorithm
-	PRFAlg   crypto.PRF
-	DH       *crypto.DiffieHellman
+	SPIi           uint64
+	SPIr           uint64
+	localResponder bool // Role in the current SA, including peer-initiated IKE rekey.
+	EncAlg         crypto.Encrypter
+	IntegAlg       crypto.IntegrityAlgorithm
+	PRFAlg         crypto.PRF
+	DH             *crypto.DiffieHellman
 
 	Keys *ikev2.IKESAKeys
 
@@ -294,6 +295,7 @@ func (s *Session) connectOnce() (result error) {
 
 	// 在 Socket 启动前暂不配置 sendFunc，等到下面 socket.Start() 之后重载
 	s.taskMgr = NewTaskManager(s.ctx, nil, 5, nil)
+	s.taskMgr.responseValidator = s.validateWindowResponse
 
 	// 1. 设置网络 (Socket)
 	localPort := s.cfg.LocalPort
@@ -315,6 +317,13 @@ func (s *Session) connectOnce() (result error) {
 	}
 	if err != nil {
 		return fmt.Errorf("failed to bind socket: %w", err)
+	}
+	if source, ok := s.socket.(interface {
+		IKEEnvelopes() <-chan ipsec.IKEEnvelope
+		CommitIKEPeer(*net.UDPAddr, bool) error
+	}); ok {
+		// Select the envelope queue before any packet can reach the receiver.
+		source.IKEEnvelopes()
 	}
 	s.socket.Start()
 	defer s.socket.Stop()

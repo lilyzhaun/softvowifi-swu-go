@@ -114,6 +114,7 @@ func Test_IKEAuthMetadata_whenFinalParserOmitsNotifyBytes(t *testing.T) {
 	key := bytes.Repeat([]byte{9}, 32)
 	mac := bytes.Repeat([]byte{7}, 32)
 	sess.EncAlg, sess.IntegAlg = enc, integ
+	sess.SPIr = 4321
 	sess.PRFAlg = crypto.PRF_HMAC_SHA2_256
 	sess.Keys = &ikev2.IKESAKeys{SK_ei: key, SK_er: key, SK_ai: mac, SK_ar: mac, SK_pr: bytes.Repeat([]byte{3}, 32)}
 	sess.MSK = []byte("0123456789abcdef0123456789abcdef")
@@ -125,14 +126,11 @@ func Test_IKEAuthMetadata_whenFinalParserOmitsNotifyBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	authData := independentResponderAUTH(sess.MSK, sess.Keys.SK_pr, idrBody, sess.saInitResp, sess.ni)
-	raw, err := sess.encryptAndWrap([]ikev2.Payload{
+	raw := encodePeerPacket(t, sess, []ikev2.Payload{
 		idr,
 		&ikev2.EncryptedPayloadAuth{AuthMethod: ikev2.AuthMethodSharedKey, AuthData: authData},
 		&ikev2.EncryptedPayloadNotify{ProtocolID: ikev2.ProtoIKE, NotifyType: 41101, NotifyData: secret},
-	}, ikev2.IKE_AUTH, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	}, ikev2.IKE_AUTH, 1, true)
 	_ = sess.handleIKEAuthFinalResp(raw)
 	events := authMetadataEvents(t, output)
 	if len(events) != 1 || events[0].Phase != "final" || events[0].Direction != "received" || !events[0].ProtectedPacketDecoded {

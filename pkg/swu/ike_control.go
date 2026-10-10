@@ -3,6 +3,7 @@ package swu
 import (
 	"encoding/binary"
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/1239t/swu-go/pkg/crypto"
@@ -31,92 +32,95 @@ func (s *Session) startIKEControlLoop() {
 }
 
 func (s *Session) ikeDispatchLoop() {
+	packets := s.socket.IKEPackets()
+	var envelopes <-chan ipsec.IKEEnvelope
+	var source interface {
+		IKEEnvelopes() <-chan ipsec.IKEEnvelope
+		CommitIKEPeer(*net.UDPAddr, bool) error
+	}
+	if candidate, ok := s.socket.(interface {
+		IKEEnvelopes() <-chan ipsec.IKEEnvelope
+		CommitIKEPeer(*net.UDPAddr, bool) error
+	}); ok {
+		source = candidate
+		envelopes = source.IKEEnvelopes()
+		packets = nil
+	}
 	for {
 		select {
 		case <-s.ctx.Done():
 			return
-		case data, ok := <-s.socket.IKEPackets():
+		case envelope, ok := <-envelopes:
 			if !ok {
 				return
 			}
-
-			// 更新入站时间戳
-			s.recordInboundActivity(time.Now())
-
-			hdr, err := ikev2.DecodeHeader(data)
-			if err != nil {
-				continue
+			s.dispatchReceivedIKE(envelope.Data, func() error {
+				return source.CommitIKEPeer(envelope.Peer, envelope.Data[18] != byte(ikev2.IKE_SA_INIT))
+			})
+		case data, ok := <-packets:
+			if !ok {
+				return
 			}
-
-			if hdr.Flags&ikev2.FlagResponse != 0 {
-				// 新机制：拦截包体交付给滑动窗口调度器
-				if handled := s.taskMgr.HandleResponse(hdr.MessageID, data); handled {
-					continue
-				}
-
-				// 旧机制保留用于支持零星写死的 ikeWaiters
-				key := ikeWaitKey{exchangeType: hdr.ExchangeType, msgID: hdr.MessageID}
-				s.ikeMu.Lock()
-				ch := s.ikeWaiters[key]
-				if ch == nil && s.ikePending != nil {
-					s.ikePending[key] = data
-				}
-				s.ikeMu.Unlock()
-				if ch != nil {
-					select {
-					case ch <- data:
-					default:
-					}
-				}
-				continue
-			}
-
-			// DPD 秒回短路：不排队，立即调用密码引擎和 Socket 返回 ePDG 存活证明
-			if hdr.ExchangeType == ikev2.INFORMATIONAL {
-				if hdr.NextPayload == ikev2.SK && (hdr.Flags&ikev2.FlagInitiator != 0) && hdr.Length == 76 { // AES/CBC+SHA256 等通常无额外载荷时的定长，或者解密探查
-					// 为了 100% 安全，解密但不排队
-					go func(msgID uint32, raw []byte) {
-						s.Logger.Debug("涉嫌收到高优 DPD 探针，开启快速通道拦截检查", logger.Uint32("msgID", msgID))
-						_, payloads, err := s.decryptAndParse(raw)
-						if err == nil && len(payloads) == 0 {
-							// 确认是空的 DPD 探针！秒回
-							s.Logger.Info("收到 ePDG DPD 死亡探测信号，已进入特权通道优先确认存活", logger.Uint32("msgID", msgID))
-							_ = s.sendEncryptedResponseWithMsgID(nil, ikev2.INFORMATIONAL, msgID)
-							return
-						}
-						// 假如误判了有其他载荷，再送回原通道慢处理
-						if err == nil {
-							s.Logger.Debug("包含载荷，退回普通队列", logger.Int(" payloadCount", len(payloads)))
-							s.handleIncomingInformational(raw)
-						}
-					}(hdr.MessageID, data)
-					continue
-				}
-			}
-
-			s.ikeMu.Lock()
-			active := s.ikeControlAlive
-			s.ikeMu.Unlock()
-			if !active {
-				continue
-			}
-
-			s.Logger.Debug("收到 ePDG 发起的请求",
-				logger.Int("exchangeType", int(hdr.ExchangeType)),
-				logger.Uint32("msgID", hdr.MessageID))
-
-			switch hdr.ExchangeType {
-			case ikev2.INFORMATIONAL:
-				if err := s.handleIncomingInformational(data); err != nil {
-					s.Logger.Warn("处理 INFORMATIONAL 失败", logger.Err(err))
-				}
-			case ikev2.CREATE_CHILD_SA:
-				s.dispatchCreateChildSA(data)
-			default:
-				s.Logger.Warn("收到未知 Exchange Type",
-					logger.Int("type", int(hdr.ExchangeType)))
-			}
+			s.dispatchReceivedIKE(data, nil)
 		}
+	}
+}
+
+func (s *Session) dispatchReceivedIKE(data []byte, commit func() error) {
+	hdr, err := ikev2.DecodeHeader(data)
+	if err != nil {
+		return
+	}
+	if hdr.Flags&ikev2.FlagResponse != 0 {
+		if s.taskMgr != nil && s.taskMgr.handleResponse(hdr.MessageID, data, commit) {
+			if hdr.ExchangeType != ikev2.IKE_SA_INIT {
+				s.recordInboundActivity(time.Now())
+			}
+			return
+		}
+		key := ikeWaitKey{exchangeType: hdr.ExchangeType, msgID: hdr.MessageID}
+		s.ikeMu.Lock()
+		ch := s.ikeWaiters[key]
+		s.ikeMu.Unlock()
+		if ch == nil {
+			return
+		} // Never retain unsolicited responses in pending.
+		if _, _, err := s.decryptAndParse(data); err != nil {
+			return
+		}
+		if commit != nil && commit() != nil {
+			return
+		}
+		s.recordInboundActivity(time.Now())
+		select {
+		case ch <- data:
+		default:
+		}
+		return
+	}
+	s.ikeMu.Lock()
+	active := s.ikeControlAlive
+	s.ikeMu.Unlock()
+	if !active {
+		return
+	}
+	if hdr.ExchangeType != ikev2.INFORMATIONAL && hdr.ExchangeType != ikev2.CREATE_CHILD_SA {
+		return
+	}
+	if _, _, err := s.decryptAndParse(data); err != nil {
+		return
+	}
+	if commit != nil && commit() != nil {
+		return
+	}
+	s.recordInboundActivity(time.Now())
+	switch hdr.ExchangeType {
+	case ikev2.INFORMATIONAL:
+		if err := s.handleIncomingInformational(data); err != nil {
+			s.Logger.Warn("处理 INFORMATIONAL 失败", logger.Err(err))
+		}
+	case ikev2.CREATE_CHILD_SA:
+		s.dispatchCreateChildSA(data)
 	}
 }
 

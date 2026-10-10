@@ -267,11 +267,7 @@ func newLebaraRekeyCryptoSession(t *testing.T) *Session {
 
 func encodeRekeyResponse(t *testing.T, sess *Session, payloads ...ikev2.Payload) []byte {
 	t.Helper()
-	raw, err := sess.encryptAndWrapWithMsgID(payloads, ikev2.CREATE_CHILD_SA, 1, true)
-	if err != nil {
-		t.Fatalf("encrypt response: %v", err)
-	}
-	return raw
+	return encodePeerPacket(t, sess, payloads, ikev2.CREATE_CHILD_SA, 1, true)
 }
 
 func transformID(t *testing.T, prop *ikev2.Proposal, typ ikev2.TransformType) ikev2.AlgorithmType {

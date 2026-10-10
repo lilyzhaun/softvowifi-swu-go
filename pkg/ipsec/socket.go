@@ -16,12 +16,14 @@ import (
 )
 
 type SocketManager struct {
-	Conn       *net.UDPConn
-	LocalAddr  *net.UDPAddr
-	RemoteAddr *net.UDPAddr
-	remoteIPs  []net.IP
-	remoteMu   sync.Mutex
-	remoteIdx  uint32
+	Conn         *net.UDPConn
+	LocalAddr    *net.UDPAddr
+	RemoteAddr   *net.UDPAddr
+	remoteIPs    []net.IP
+	remoteMu     sync.Mutex
+	remoteIdx    uint32
+	ikeEnvelopes chan IKEEnvelope
+	useEnvelopes atomic.Bool
 
 	IKEChan   chan []byte
 	ESPChan   chan []byte
@@ -38,6 +40,53 @@ type SocketManager struct {
 
 func (s *SocketManager) IKEPackets() <-chan []byte {
 	return s.IKEChan
+}
+
+// IKEEnvelope carries an uncommitted source through the validation boundary.
+type IKEEnvelope struct {
+	Data []byte
+	Peer *net.UDPAddr
+}
+
+func (s *SocketManager) IKEEnvelopes() <-chan IKEEnvelope {
+	s.useEnvelopes.Store(true)
+	return s.ikeEnvelopes
+}
+
+// CommitIKEPeer is called only after Session validation. Initial responses must
+// use the requested port; protected packets may prove a NAT mapping change.
+func (s *SocketManager) CommitIKEPeer(peer *net.UDPAddr, protected bool) error {
+	s.remoteMu.Lock()
+	defer s.remoteMu.Unlock()
+	select {
+	case <-s.closeChan:
+		return net.ErrClosed
+	default:
+	}
+	if peer == nil || peer.Port <= 0 || peer.Port > 65535 || s.RemoteAddr == nil {
+		return errors.New("invalid IKE peer")
+	}
+	allowed := false
+	for _, ip := range s.remoteIPs {
+		if peer.IP.Equal(ip) {
+			allowed = true
+			break
+		}
+	}
+	if !allowed || (!protected && peer.Port != s.RemoteAddr.Port) {
+		return errors.New("IKE peer outside bound endpoint")
+	}
+	old := s.RemoteAddr.Port
+	s.RemoteAddr = &net.UDPAddr{IP: append(net.IP(nil), peer.IP...), Port: peer.Port, Zone: peer.Zone}
+	s.remoteIPs = []net.IP{append(net.IP(nil), peer.IP...)}
+	s.remoteIdx = 0
+	if old != peer.Port {
+		select {
+		case s.NetEvents <- NetEvent{Type: EventNATPortChanged, OldPort: old, NewPort: peer.Port}:
+		default:
+		}
+	}
+	return nil
 }
 
 func (s *SocketManager) ESPPackets() <-chan []byte {
@@ -77,14 +126,15 @@ func NewSocketManager(local, remote string, dnsServer string) (*SocketManager, e
 	}
 
 	return &SocketManager{
-		Conn:       conn,
-		LocalAddr:  lAddr,
-		RemoteAddr: rAddr,
-		remoteIPs:  remoteIPs,
-		IKEChan:    make(chan []byte, 100),
-		ESPChan:    make(chan []byte, 1000), // 数据平面的更高缓冲区
-		NetEvents:  make(chan NetEvent, 10),
-		closeChan:  make(chan struct{}),
+		Conn:         conn,
+		LocalAddr:    lAddr,
+		RemoteAddr:   rAddr,
+		remoteIPs:    remoteIPs,
+		IKEChan:      make(chan []byte, 100),
+		ikeEnvelopes: make(chan IKEEnvelope, 100),
+		ESPChan:      make(chan []byte, 1000), // 数据平面的更高缓冲区
+		NetEvents:    make(chan NetEvent, 10),
+		closeChan:    make(chan struct{}),
 	}, nil
 }
 
@@ -176,8 +226,11 @@ func (s *SocketManager) Stop() {
 	s.Conn.Close()
 	s.wg.Wait()
 	close(s.IKEChan)
+	close(s.ikeEnvelopes)
 	close(s.ESPChan)
+	s.remoteMu.Lock()
 	close(s.NetEvents)
+	s.remoteMu.Unlock()
 }
 
 func (s *SocketManager) readLoop() {
@@ -192,47 +245,17 @@ func (s *SocketManager) readLoop() {
 		}
 
 		s.remoteMu.Lock()
-		allowed := len(s.remoteIPs) == 0
+		allowed := false
+		port := s.RemoteAddr.Port
 		for _, rip := range s.remoteIPs {
 			if addr.IP.Equal(rip) {
 				allowed = true
-				if len(s.remoteIPs) > 1 {
-					s.RemoteAddr.IP = addr.IP
-					s.remoteIPs = []net.IP{addr.IP}
-					s.remoteIdx = 0
-					logger.Debug("锁定 ePDG 目标", logger.String("ip", addr.IP.String()))
-				}
 				break
 			}
 		}
 		s.remoteMu.Unlock()
 		if !allowed {
 			continue
-		}
-
-		// NAT-T 端口漂移检测 (RFC 3947/3948)
-		// 如果来源 IP 校验通过但端口发生变化，说明家庭路由器的 NAT 映射已被翻新
-		s.remoteMu.Lock()
-		if addr.Port != s.RemoteAddr.Port && addr.Port > 0 {
-			oldPort := s.RemoteAddr.Port
-			s.RemoteAddr.Port = addr.Port
-			s.remoteMu.Unlock()
-			logger.Info("NAT-T 端口漂移检测：远端源端口发生变化，已动态跟随",
-				logger.Int("old_port", oldPort),
-				logger.Int("new_port", addr.Port),
-				logger.String("remote_ip", addr.IP.String()))
-			// 通知上层会话（非阻塞）
-			select {
-			case s.NetEvents <- NetEvent{
-				Type:    EventNATPortChanged,
-				OldPort: oldPort,
-				NewPort: addr.Port,
-				Reason:  fmt.Sprintf("NAT port changed %d -> %d", oldPort, addr.Port),
-			}:
-			default:
-			}
-		} else {
-			s.remoteMu.Unlock()
 		}
 
 		data := make([]byte, n)
@@ -243,6 +266,19 @@ func (s *SocketManager) readLoop() {
 		}
 
 		if ikeData, ok := parseIKEPayload(data); ok {
+			// SA_INIT is unauthenticated and cannot prove a remote port change.
+			if ikeData[18] == byte(ikev2.IKE_SA_INIT) && addr.Port != port {
+				continue
+			}
+			if s.useEnvelopes.Load() {
+				select {
+				case s.ikeEnvelopes <- IKEEnvelope{Data: ikeData, Peer: addr}:
+					atomic.AddUint64(&s.receivedIKE, 1)
+				default:
+					atomic.AddUint64(&s.droppedIKE, 1)
+				}
+				continue
+			}
 			select {
 			case s.IKEChan <- ikeData:
 				atomic.AddUint64(&s.receivedIKE, 1)
@@ -331,6 +367,8 @@ func (s *SocketManager) ReceiveIKE() ([]byte, error) {
 }
 
 func (s *SocketManager) SetRemotePort(port int) {
+	s.remoteMu.Lock()
+	defer s.remoteMu.Unlock()
 	s.RemoteAddr.Port = port
 }
 
@@ -349,13 +387,17 @@ func (s *SocketManager) LocalIP() net.IP {
 }
 
 func (s *SocketManager) RemoteIP() net.IP {
+	s.remoteMu.Lock()
+	defer s.remoteMu.Unlock()
 	if s.RemoteAddr == nil {
 		return nil
 	}
-	return s.RemoteAddr.IP
+	return append(net.IP(nil), s.RemoteAddr.IP...)
 }
 
 func (s *SocketManager) RemotePort() int {
+	s.remoteMu.Lock()
+	defer s.remoteMu.Unlock()
 	if s.RemoteAddr == nil {
 		return 0
 	}
@@ -370,6 +412,8 @@ func (s *SocketManager) LocalAddrString() string {
 }
 
 func (s *SocketManager) RemoteAddrString() string {
+	s.remoteMu.Lock()
+	defer s.remoteMu.Unlock()
 	if s.RemoteAddr == nil {
 		return ""
 	}
