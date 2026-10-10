@@ -1,68 +1,93 @@
 package swu
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/1239t/swu-go/pkg/crypto"
 	"github.com/1239t/swu-go/pkg/ikev2"
 	"github.com/1239t/swu-go/pkg/logger"
 )
 
+// The dispatcher hands this owned, fully authenticated message to consumers.
+// A nil message means that a valid fragment is still awaiting its siblings.
+type protectedIKEMessage struct {
+	msgID    uint32
+	payloads []ikev2.Payload
+	fragment *fragmentKey
+}
+
+var errFragmentIncomplete = errors.New("incomplete protected IKE message")
+
 func (s *Session) decryptAndParse(data []byte) (uint32, []ikev2.Payload, error) {
-	header, err := s.protectedHeader(data)
+	message, err := s.decodeProtectedIKE(data)
 	if err != nil {
 		return 0, nil, err
+	}
+	if message == nil {
+		return binary.BigEndian.Uint32(data[20:24]), nil, nil
+	}
+	return message.msgID, message.payloads, nil
+}
+
+func (s *Session) decodeProtectedIKE(data []byte) (*protectedIKEMessage, error) {
+	header, err := s.protectedHeader(data)
+	if err != nil {
+		return nil, err
 	}
 
 	// RFC 7383: 处理 Encrypted Fragment (SKF) 载荷
 	if header.NextPayload == ikev2.EncryptedFragment {
 		plaintext, fragNum, totalFrags, msgID, err := s.decryptSKF(data)
 		if err != nil {
-			return header.MessageID, nil, fmt.Errorf("SKF 解密失败: %v", err)
+			return nil, fmt.Errorf("SKF 解密失败: %w", err)
 		}
 		s.Logger.Debug("收到 IKE 分片",
 			logger.Int("frag", int(fragNum)),
 			logger.Int("total", int(totalFrags)),
 			logger.Uint32("msgID", msgID))
 
-		complete, err := s.fragmentBuf.addFragment(msgID, fragNum, totalFrags, plaintext)
+		first := ikev2.PayloadType(data[ikev2.IKE_HEADER_LEN])
+		if (fragNum > 1 && first != 0) || (fragNum == 1 && first == 0 && (totalFrags != 1 || len(plaintext) != 0)) {
+			return nil, ErrInvalidProtectedIKE
+		}
+		key := s.fragmentKey(header)
+		if err := s.fragmentBuf.replay(key, fragNum, time.Now()); err != nil {
+			return nil, err
+		}
+		reassembled, first, err := s.fragmentBuf.addFragment(key, first, fragNum, totalFrags, plaintext, time.Now())
 		if err != nil {
-			return msgID, nil, err
+			return nil, err
 		}
-		if !complete {
-			// 还没收齐，返回空载荷（调用方会继续接收）
-			return msgID, nil, nil
+		if reassembled == nil {
+			return nil, nil
 		}
-		// 所有分片已收齐，重组
-		reassembled, err := s.fragmentBuf.reassemble(msgID)
+		payloads, err := s.parsePayloads(reassembled, first)
 		if err != nil {
-			return msgID, nil, err
+			return nil, err
 		}
-		// 解析第一个分片中记录的 NextPayload 类型
-		// SKF Generic Header 中的 NextPayload 指向重组后的第一个载荷
-		firstPayloadType := ikev2.PayloadType(data[ikev2.IKE_HEADER_LEN])
-		payloads, err := s.parsePayloads(reassembled, firstPayloadType)
-		return msgID, payloads, err
+		return &protectedIKEMessage{msgID: msgID, payloads: payloads, fragment: &key}, nil
 	}
 
 	// 处理 SK 载荷
 	offset := ikev2.IKE_HEADER_LEN
 	genHeader, err := ikev2.DecodePayloadHeader(data[offset : offset+4])
 	if err != nil {
-		return 0, nil, err
+		return nil, err
 	}
 
 	skBodyLen := int(genHeader.PayloadLength) - 4
 	if skBodyLen < 0 || offset+4+skBodyLen != len(data) {
-		return 0, nil, errors.New("SK 载荷太短")
+		return nil, errors.New("SK 载荷太短")
 	}
 
 	skContent := data[offset+4 : offset+4+skBodyLen]
 	ivSize := s.EncAlg.IVSize()
 
 	if len(skContent) < ivSize {
-		return 0, nil, errors.New("SK 内容对于 IV 来说太短")
+		return nil, errors.New("SK 内容对于 IV 来说太短")
 	}
 	iv := skContent[:ivSize]
 	// RFC5282: AEAD authenticates the generic SK header as well as IKE.
@@ -77,34 +102,37 @@ func (s *Session) decryptAndParse(data []byte) (uint32, []ikev2.Payload, error) 
 	if !s.ikeIsAEAD && s.IntegAlg != nil {
 		icvSize := s.IntegAlg.OutputSize()
 		if len(ciphertext) < icvSize {
-			return 0, nil, errors.New("SK 内容对于 ICV 来说太短")
+			return nil, errors.New("SK 内容对于 ICV 来说太短")
 		}
 		receivedICV := ciphertext[len(ciphertext)-icvSize:]
 		ciphertext = ciphertext[:len(ciphertext)-icvSize]
 
 		dataToVerify := data[:ikev2.IKE_HEADER_LEN+4+ivSize+len(ciphertext)]
 		if !s.IntegAlg.Verify(integrityKey, dataToVerify, receivedICV) {
-			return 0, nil, errors.New("IKE 完整性校验失败")
+			return nil, errors.New("IKE 完整性校验失败")
 		}
 	}
 
 	plaintext, err := s.EncAlg.Decrypt(ciphertext, key, iv, aad)
 	if err != nil {
-		return 0, nil, fmt.Errorf("解密失败(encr=%s aead=%v iv=%d ct=%d): %v",
+		return nil, fmt.Errorf("解密失败(encr=%s aead=%v iv=%d ct=%d): %v",
 			ikev2.EncrToString(s.ikeEncrID), s.ikeIsAEAD, ivSize, len(ciphertext), err)
 	}
 
 	if len(plaintext) < 1 {
-		return 0, nil, errors.New("SK 明文太短")
+		return nil, errors.New("SK 明文太短")
 	}
 	padLen := int(plaintext[len(plaintext)-1])
 	if len(plaintext) < 1+padLen {
-		return 0, nil, errors.New("SK 填充长度无效")
+		return nil, errors.New("SK 填充长度无效")
 	}
 	plaintext = plaintext[:len(plaintext)-1-padLen]
 
 	payloads, err := s.parsePayloads(plaintext, genHeader.NextPayload)
-	return header.MessageID, payloads, err
+	if err != nil {
+		return nil, err
+	}
+	return &protectedIKEMessage{msgID: header.MessageID, payloads: payloads}, nil
 }
 
 func (s *Session) parsePayloads(data []byte, firstType ikev2.PayloadType) ([]ikev2.Payload, error) {

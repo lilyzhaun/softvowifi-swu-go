@@ -2,6 +2,7 @@ package swu
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -32,6 +33,10 @@ func (s *Session) startIKEControlLoop() {
 }
 
 func (s *Session) ikeDispatchLoop() {
+	// Reuse the receive goroutine for bounded expiry, including when idle.
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	defer s.fragmentBuf.clear()
 	packets := s.socket.IKEPackets()
 	var envelopes <-chan ipsec.IKEEnvelope
 	var source interface {
@@ -50,6 +55,8 @@ func (s *Session) ikeDispatchLoop() {
 		select {
 		case <-s.ctx.Done():
 			return
+		case now := <-ticker.C:
+			s.fragmentBuf.expire(now)
 		case envelope, ok := <-envelopes:
 			if !ok {
 				return
@@ -85,7 +92,8 @@ func (s *Session) dispatchReceivedIKE(data []byte, commit func() error) {
 		if ch == nil {
 			return
 		} // Never retain unsolicited responses in pending.
-		if _, _, err := s.decryptAndParse(data); err != nil {
+		message, err := s.decodeProtectedIKE(data)
+		if err != nil || message == nil {
 			return
 		}
 		if commit != nil && commit() != nil {
@@ -93,7 +101,7 @@ func (s *Session) dispatchReceivedIKE(data []byte, commit func() error) {
 		}
 		s.recordInboundActivity(time.Now())
 		select {
-		case ch <- data:
+		case ch <- message:
 		default:
 		}
 		return
@@ -107,31 +115,48 @@ func (s *Session) dispatchReceivedIKE(data []byte, commit func() error) {
 	if hdr.ExchangeType != ikev2.INFORMATIONAL && hdr.ExchangeType != ikev2.CREATE_CHILD_SA {
 		return
 	}
-	if _, _, err := s.decryptAndParse(data); err != nil {
+	message, err := s.decodeProtectedIKE(data)
+	if err != nil || message == nil {
+		var replay *fragmentReplay
+		if errors.As(err, &replay) && len(replay.reply) > 0 {
+			if err := s.socket.SendIKE(replay.reply); err != nil {
+				s.Logger.Warn("重发分片请求响应失败", logger.Err(err))
+			}
+		}
 		return
 	}
 	if commit != nil && commit() != nil {
 		return
 	}
+	if message.fragment != nil {
+		s.fragmentBuf.processed(*message.fragment, time.Now())
+	}
 	s.recordInboundActivity(time.Now())
 	switch hdr.ExchangeType {
 	case ikev2.INFORMATIONAL:
-		if err := s.handleIncomingInformational(data); err != nil {
+		if err := s.handleIncomingInformationalParsed(message.msgID, message.payloads); err != nil {
 			s.Logger.Warn("处理 INFORMATIONAL 失败", logger.Err(err))
 		}
 	case ikev2.CREATE_CHILD_SA:
-		s.dispatchCreateChildSA(data)
+		s.dispatchCreateChildSAParsed(message.msgID, message.payloads)
 	}
 }
 
 // dispatchCreateChildSA 解密 CREATE_CHILD_SA 并分发到 Child SA Rekey 或 IKE SA Rekey
 func (s *Session) dispatchCreateChildSA(data []byte) {
-	msgID, payloads, err := s.decryptAndParse(data)
+	message, err := s.decodeProtectedIKE(data)
 	if err != nil {
 		s.Logger.Warn("解密 CREATE_CHILD_SA 失败", logger.Err(err))
 		return
 	}
+	if message == nil {
+		return
+	}
 
+	s.dispatchCreateChildSAParsed(message.msgID, message.payloads)
+}
+
+func (s *Session) dispatchCreateChildSAParsed(msgID uint32, payloads []ikev2.Payload) {
 	// 统一交给 handleIncomingCreateChildSAParsed 分发处理
 	// 该函数会根据 ProtocolID 区分 Child SA Rekey 和 IKE SA Rekey
 	s.Logger.Info("收到 CREATE_CHILD_SA 请求，开始处理",
@@ -148,14 +173,25 @@ func (s *Session) sendEncryptedResponseWithMsgID(payloads []ikev2.Payload, excha
 	if err != nil {
 		return err
 	}
-	return s.socket.SendIKE(packet)
+	if err := s.socket.SendIKE(packet); err != nil {
+		return err
+	}
+	s.cacheFragmentReply(exchangeType, msgID, packet)
+	return nil
 }
 
 func (s *Session) handleIncomingInformational(data []byte) error {
-	msgID, payloads, err := s.decryptAndParse(data)
+	message, err := s.decodeProtectedIKE(data)
 	if err != nil {
 		return err
 	}
+	if message == nil {
+		return errFragmentIncomplete
+	}
+	return s.handleIncomingInformationalParsed(message.msgID, message.payloads)
+}
+
+func (s *Session) handleIncomingInformationalParsed(msgID uint32, payloads []ikev2.Payload) error {
 
 	var closed SessionDownReason
 	defer func() {

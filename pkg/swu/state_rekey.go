@@ -106,18 +106,25 @@ func (s *Session) rekeyChildSA(ops childRekeyXFRMOps) error {
 		return fmt.Errorf("CREATE_CHILD_SA 失败: %v", err)
 	}
 
-	s.Logger.Info("Rekey 收到 ePDG 响应", logger.Int("len", len(respData)))
-	return s.handleCreateChildSAResp(respData, newNonce, newSPIValue, ops)
+	s.Logger.Info("Rekey 收到 ePDG 响应", logger.Int("payloadCount", len(respData.payloads)))
+	return s.handleCreateChildSARespParsed(respData.payloads, newNonce, newSPIValue, ops)
 }
 
 // handleCreateChildSAResp 处理 CREATE_CHILD_SA 响应
 func (s *Session) handleCreateChildSAResp(data []byte, niNonce []byte, newSPI uint32, ops childRekeyXFRMOps) error {
 	s.Logger.Debug("开始解密 Rekey 响应", logger.Int("dataLen", len(data)))
-	_, payloads, err := s.decryptAndParse(data)
-	if err != nil {
+	message, err := s.decodeProtectedIKE(data)
+	if err != nil || message == nil {
+		if err == nil {
+			err = errFragmentIncomplete
+		}
 		s.Logger.Warn("Rekey 响应解密失败", logger.Err(err))
 		return err
 	}
+	return s.handleCreateChildSARespParsed(message.payloads, niNonce, newSPI, ops)
+}
+
+func (s *Session) handleCreateChildSARespParsed(payloads []ikev2.Payload, niNonce []byte, newSPI uint32, ops childRekeyXFRMOps) error {
 
 	s.Logger.Info("Rekey 响应解密成功", logger.Int("payloadCount", len(payloads)))
 	for i, pl := range payloads {

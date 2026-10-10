@@ -96,10 +96,10 @@ func (s *Session) RekeyIKESA() error {
 		return fmt.Errorf("IKE SA Rekey CREATE_CHILD_SA 发送失败: %w", err)
 	}
 
-	s.Logger.Info("IKE SA Rekey 收到响应", logger.Int("len", len(respData)))
+	s.Logger.Info("IKE SA Rekey 收到响应", logger.Int("payloadCount", len(respData.payloads)))
 
 	// 9. 处理响应
-	return s.handleRekeyIKESAResp(respData, newNonce, newDH, newSPIi, oldSKd, oldSPIi, oldSPIr)
+	return s.handleRekeyIKESARespParsed(respData.payloads, newNonce, newDH, newSPIi, oldSKd, oldSPIi, oldSPIr)
 }
 
 // handleRekeyIKESAResp 处理 IKE SA Rekey 的 CREATE_CHILD_SA 响应
@@ -111,10 +111,17 @@ func (s *Session) handleRekeyIKESAResp(
 	oldSKd []byte,
 	oldSPIi, oldSPIr uint64,
 ) error {
-	_, payloads, err := s.decryptAndParse(data)
+	message, err := s.decodeProtectedIKE(data)
 	if err != nil {
-		return fmt.Errorf("IKE SA Rekey 响应解密失败: %v", err)
+		return err
 	}
+	if message == nil {
+		return errFragmentIncomplete
+	}
+	return s.handleRekeyIKESARespParsed(message.payloads, niNonce, newDH, newSPIi, oldSKd, oldSPIi, oldSPIr)
+}
+
+func (s *Session) handleRekeyIKESARespParsed(payloads []ikev2.Payload, niNonce []byte, newDH *crypto.DiffieHellman, newSPIi uint64, oldSKd []byte, oldSPIi, oldSPIr uint64) error {
 	for _, p := range payloads {
 		if pl, ok := p.(*ikev2.EncryptedPayloadNotify); ok && pl.NotifyType < 16384 {
 			return fmt.Errorf("IKE SA Rekey 被拒绝: %w", ikeRekeyPeerReject(pl.NotifyType))
@@ -159,6 +166,7 @@ func (s *Session) handleRekeyIKESAResp(
 	s.SPIi = newSPIi
 	s.SPIr = sel.newSPIr
 	s.Keys = newKeys
+	s.fragmentBuf.clear()
 	s.localResponder = false
 	s.SequenceNumber.Store(0)
 	s.DH = newDH
@@ -286,6 +294,7 @@ func (s *Session) HandleRekeyIKESARequest(msgID uint32, payloads []ikev2.Payload
 	s.SPIi = peerSPI
 	s.SPIr = newSPIr
 	s.Keys = newKeys
+	s.fragmentBuf.clear()
 	s.localResponder = true
 	s.SequenceNumber.Store(0)
 	s.DH = newDH

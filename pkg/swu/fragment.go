@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/1239t/swu-go/pkg/crypto"
 	"github.com/1239t/swu-go/pkg/ikev2"
@@ -22,96 +23,196 @@ const (
 	// 1280 - 20 - 8 - 28 - 8 = 1216 字节可用于 IV + 密文 + ICV
 	defaultFragmentMTU = 1280
 	ikeOverhead        = 28 + 8 + 20 + 8 // IKE Header + SKF Header + IP + UDP
-	maxFragments       = 255             // RFC 7383: 最多 255 个分片
+	maxFragments       = 255             // Local resource cap; RFC7383 fields are 16-bit.
 	// 最大重组后包大小 (防止内存耗尽攻击)
 	// 参考 strongSwan: frag->max_packet 默认 64KB
 	maxFragmentedPacket = 64 * 1024
+	maxFragmentSets     = 16
+	fragmentTimeout     = 30 * time.Second
 )
 
-// fragmentBuffer 缓存接收端的分片，按 Message ID 分组
-type fragmentBuffer struct {
-	mu    sync.Mutex
-	frags map[uint32]*fragmentSet
+// Fragment identity includes the SA key generation and both sender directions.
+// Equal MIDs in different exchanges or after IKE rekey are not one message.
+type fragmentKey struct {
+	spii, spir uint64
+	keys       *ikev2.IKESAKeys
+	exchange   ikev2.ExchangeType
+	mid        uint32
+	flags      uint8
 }
 
-// fragmentSet 单个 Message ID 的所有分片
+func (s *Session) fragmentKey(h *ikev2.IKEHeader) fragmentKey {
+	return fragmentKey{h.SPIi, h.SPIr, s.Keys, h.ExchangeType, h.MessageID, h.Flags & (ikev2.FlagInitiator | ikev2.FlagResponse)}
+}
+
+type fragmentBuffer struct {
+	mu      sync.Mutex
+	frags   map[fragmentKey]*fragmentSet
+	replies map[fragmentKey]fragmentReply
+}
+
+type fragmentReply struct {
+	packet  []byte
+	expires time.Time
+}
+type fragmentReplay struct{ reply []byte }
+
+func (*fragmentReplay) Error() string { return "processed IKE fragment replay" }
+
 type fragmentSet struct {
 	total    uint16
 	received map[uint16][]byte // Fragment Number → 解密后的明文
 	totalLen int               // 所有已接收分片的总字节数
+	first    ikev2.PayloadType
+	expires  time.Time
 }
 
 func newFragmentBuffer() *fragmentBuffer {
 	return &fragmentBuffer{
-		frags: make(map[uint32]*fragmentSet),
+		frags:   make(map[fragmentKey]*fragmentSet),
+		replies: make(map[fragmentKey]fragmentReply),
 	}
 }
 
-// addFragment 添加一个分片，返回是否已收齐所有分片
-// 参考 strongSwan message.c:add_fragment() 的安全检查:
-//   - 重复分片检测 (忽略已有分片)
-//   - 最大包大小限制 (防止 DoS)
-//   - 总数不一致时重置缓存
-func (fb *fragmentBuffer) addFragment(msgID uint32, fragNum, totalFrags uint16, plaintext []byte) (bool, error) {
+// Only authenticated fragments enter this buffer. Assembly and removal are
+// one locked operation, so the first payload type cannot follow arrival order.
+func (fb *fragmentBuffer) addFragment(key fragmentKey, first ikev2.PayloadType, fragNum, totalFrags uint16, plaintext []byte, now time.Time) ([]byte, ikev2.PayloadType, error) {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
+	fb.expireLocked(now)
 
-	fs, ok := fb.frags[msgID]
+	fs, ok := fb.frags[key]
 	if !ok {
+		if len(fb.frags) >= maxFragmentSets {
+			return nil, 0, errors.New("IKE fragment queue limit")
+		}
 		fs = &fragmentSet{
 			total:    totalFrags,
 			received: make(map[uint16][]byte),
+			expires:  now.Add(fragmentTimeout),
 		}
-		fb.frags[msgID] = fs
+		fb.frags[key] = fs
 	}
 
-	// strongSwan: 如果总数变大，重置缓存 (可能是对端重发了不同分片)
+	// RFC7383 2.6: an authenticated larger total starts a new PMTU probe.
 	if totalFrags > fs.total {
 		fs.total = totalFrags
 		fs.received = make(map[uint16][]byte)
-		fs.totalLen = 0
+		fs.totalLen, fs.first = 0, 0
 	} else if fs.total != totalFrags {
-		return false, fmt.Errorf("分片总数不一致: 期望 %d, 收到 %d", fs.total, totalFrags)
+		return nil, 0, errors.New("stale IKE fragmentation total")
 	}
 
-	// strongSwan: 忽略重复分片
-	if _, exists := fs.received[fragNum]; exists {
-		return false, nil
+	if previous, exists := fs.received[fragNum]; exists {
+		if !bytes.Equal(previous, plaintext) || (fragNum == 1 && fs.first != first) {
+			return nil, 0, errors.New("conflicting IKE fragment replay")
+		}
+		return nil, 0, nil
 	}
 
-	// strongSwan: 检查最大包大小 (防止内存耗尽攻击)
+	if len(plaintext) > maxFragmentedPacket-fs.totalLen {
+		delete(fb.frags, key)
+		return nil, 0, errors.New("IKE fragmented message size limit")
+	}
 	fs.totalLen += len(plaintext)
-	if fs.totalLen > maxFragmentedPacket {
-		delete(fb.frags, msgID)
-		return false, fmt.Errorf("分片重组后超过最大包大小限制 (%d > %d)", fs.totalLen, maxFragmentedPacket)
+	fs.received[fragNum] = bytes.Clone(plaintext)
+	if fragNum == 1 {
+		fs.first = first
 	}
-
-	fs.received[fragNum] = plaintext
-	return uint16(len(fs.received)) == fs.total, nil
+	if len(fs.received) != int(fs.total) {
+		return nil, 0, nil
+	}
+	result := make([]byte, 0, fs.totalLen)
+	for i := uint16(1); i <= fs.total; i++ {
+		result = append(result, fs.received[i]...)
+	}
+	delete(fb.frags, key)
+	return result, fs.first, nil
 }
 
-// reassemble 按 Fragment Number 顺序拼接所有分片的明文
-func (fb *fragmentBuffer) reassemble(msgID uint32) ([]byte, error) {
+func (fb *fragmentBuffer) expireLocked(now time.Time) {
+	for key, set := range fb.frags {
+		if !now.Before(set.expires) {
+			delete(fb.frags, key)
+		}
+	}
+	for key, reply := range fb.replies {
+		if !now.Before(reply.expires) {
+			delete(fb.replies, key)
+		}
+	}
+}
+
+func (fb *fragmentBuffer) expire(now time.Time) {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
+	fb.expireLocked(now)
+}
 
-	fs, ok := fb.frags[msgID]
-	if !ok {
-		return nil, errors.New("未找到分片数据")
-	}
+func (fb *fragmentBuffer) clear() {
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	clear(fb.frags)
+	clear(fb.replies)
+}
 
-	var result []byte
-	for i := uint16(1); i <= fs.total; i++ {
-		data, ok := fs.received[i]
-		if !ok {
-			return nil, fmt.Errorf("缺少分片 %d/%d", i, fs.total)
+// RFC7383 2.6.1: after processing a request, only fragment 1 may retransmit
+// its cached response. Other fragments cannot execute its effects again.
+func (fb *fragmentBuffer) replay(key fragmentKey, number uint16, now time.Time) error {
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	fb.expireLocked(now)
+	if reply, ok := fb.replies[key]; ok {
+		if number == 1 {
+			return &fragmentReplay{bytes.Clone(reply.packet)}
 		}
-		result = append(result, data...)
+		return &fragmentReplay{}
 	}
+	return nil
+}
 
-	// 清理缓存
-	delete(fb.frags, msgID)
-	return result, nil
+func (fb *fragmentBuffer) processed(key fragmentKey, now time.Time) {
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	fb.expireLocked(now)
+	if len(fb.replies) >= maxFragmentSets {
+		var oldest fragmentKey
+		var earliest time.Time
+		for candidate, reply := range fb.replies {
+			if earliest.IsZero() || reply.expires.Before(earliest) {
+				oldest, earliest = candidate, reply.expires
+			}
+		}
+		delete(fb.replies, oldest)
+	}
+	fb.replies[key] = fragmentReply{expires: now.Add(fragmentTimeout)}
+}
+
+func (s *Session) cacheFragmentReply(exchange ikev2.ExchangeType, mid uint32, packet []byte) {
+	if len(packet) > maxFragmentedPacket {
+		return
+	} // Bound retained network-derived reply bytes.
+	flags := uint8(0)
+	if s.localResponder {
+		flags = ikev2.FlagInitiator
+	}
+	key := fragmentKey{s.SPIi, s.SPIr, s.Keys, exchange, mid, flags}
+	s.fragmentBuf.mu.Lock()
+	defer s.fragmentBuf.mu.Unlock()
+	if reply, ok := s.fragmentBuf.replies[key]; ok {
+		reply.packet = bytes.Clone(packet)
+		s.fragmentBuf.replies[key] = reply
+	}
+}
+
+func (fb *fragmentBuffer) discardResponse(exchange ikev2.ExchangeType, mid uint32) {
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	for key := range fb.frags {
+		if key.exchange == exchange && key.mid == mid && key.flags&ikev2.FlagResponse != 0 {
+			delete(fb.frags, key)
+		}
+	}
 }
 
 // fragmentMessage 将 IKE 消息分片发送 (RFC 7383)

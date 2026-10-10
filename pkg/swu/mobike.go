@@ -125,7 +125,7 @@ func (s *Session) sendMOBIKEUpdate() ([]byte, error) {
 	}
 
 	// 验证响应中的 COOKIE2
-	if err := s.verifyCookie2Response(respData, cookie2); err != nil {
+	if err := s.verifyCookie2ResponseParsed(respData.payloads, cookie2); err != nil {
 		return nil, err
 	}
 
@@ -140,10 +140,17 @@ func (s *Session) verifyCookie2Response(respData []byte, expectedCookie2 []byte)
 		return nil
 	}
 
-	_, respPayloads, err := s.decryptAndParse(respData)
+	message, err := s.decodeProtectedIKE(respData)
 	if err != nil {
-		return fmt.Errorf("解析 MOBIKE 响应失败: %v", err)
+		return fmt.Errorf("解析 MOBIKE 响应失败: %w", err)
 	}
+	if message == nil {
+		return errFragmentIncomplete
+	}
+	return s.verifyCookie2ResponseParsed(message.payloads, expectedCookie2)
+}
+
+func (s *Session) verifyCookie2ResponseParsed(respPayloads []ikev2.Payload, expectedCookie2 []byte) error {
 
 	for _, pl := range respPayloads {
 		if notify, ok := pl.(*ikev2.EncryptedPayloadNotify); ok {
