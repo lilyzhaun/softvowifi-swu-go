@@ -48,10 +48,11 @@ func childRekeySession(t *testing.T) (*Session, *pipeTransport) {
 	sess.xfrmLocalIP, sess.xfrmRemoteIP = settings.xfrmLocalIP, settings.xfrmRemoteIP
 	sess.xfrmLocalPort, sess.xfrmRemotePort, sess.xfrmIfID = settings.xfrmLocalPort, settings.xfrmRemotePort, settings.xfrmIfID
 	sess.childIntegID, sess.childESN = settings.childIntegID, settings.childESN
+	sess.cpConfig, sess.tsi = settings.cpConfig, settings.tsi
 	sess.ChildSAOut, sess.ChildSAIn = next.out, next.in
 	sess.ChildSAOut.SPI, sess.ChildSAIn.SPI = 101, 102
 	sess.ChildSAsIn = map[uint32]*ipsec.SecurityAssociation{102: sess.ChildSAIn}
-	sess.tsr = []*ikev2.TrafficSelector{ikev2.NewTrafficSelectorIPV4([]byte{0, 0, 0, 0}, []byte{255, 255, 255, 255}, 0, 65535)}
+	sess.tsr = settings.tsr
 	sess.childOutPolicies = []childOutPolicy{{saOut: sess.ChildSAOut, tsr: sess.tsr}}
 	sess.lastRekeyTime = time.Unix(1, 0)
 	sess.rekeyResetCh, sess.childRekeyResetCh = make(chan struct{}, 2), make(chan struct{}, 2)
