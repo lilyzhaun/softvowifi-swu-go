@@ -24,3 +24,9 @@
 来源仅RFC7296/RFC4303/Go标准库与现有维护源码，无外部客户端代码复制；原MIT/module/unknown上游归属保持。
 
 最终受影响swu/ikev2两包race/shuffle/count=1为594PASS、0失败/0跳过；先前一次全库750PASS、22既有隔离内核opt-in跳过，6测试包通过/2包无测试文件。新增最后回调复制/合法key长度及CP先于SA直接RED→GREEN后仅重跑受影响包，不冒称重跑全部库。对应vet/gofmt/diff空白通过，主仓/设备结果待后继记录。
+
+## 后继：静态拒绝分支诊断
+
+主仓真实pin/正常构建后首个小米13原配置短验被`invalid initial Child SA transaction`拒绝，已stop/清理，不能由受保护完整载荷已解析判哪一规则失败。
+在基准`3648adc`的`fix/a02-reject-reasons`只为原拒绝加固定不变量名称（原请求/编号/变换/CP类型与长度/TS绑定等），保持相同`errors.Is`和全部接受/拒绝条件，不加入运营商/安全降级。
+错误文本不带身份、IP地址、配置值、密钥或payload。四种合成拒绝的分支准确性/无私密值先RED后GREEN；真实根因仍待后继标准候选的新证据，不能用这个文档预报结果。
