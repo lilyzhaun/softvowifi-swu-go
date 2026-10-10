@@ -10,11 +10,10 @@ import (
 )
 
 func (s *Session) decryptAndParse(data []byte) (uint32, []ikev2.Payload, error) {
-	header, err := ikev2.DecodeHeader(data)
+	header, err := s.protectedHeader(data)
 	if err != nil {
 		return 0, nil, err
 	}
-	s.SPIr = header.SPIr
 
 	// RFC 7383: 处理 Encrypted Fragment (SKF) 载荷
 	if header.NextPayload == ikev2.EncryptedFragment {
@@ -47,14 +46,6 @@ func (s *Session) decryptAndParse(data []byte) (uint32, []ikev2.Payload, error) 
 		return msgID, payloads, err
 	}
 
-	if header.NextPayload != ikev2.SK {
-		packet, err := ikev2.DecodePacket(data)
-		if err != nil || packet == nil {
-			return header.MessageID, nil, err
-		}
-		return header.MessageID, packet.Payloads, nil
-	}
-
 	// 处理 SK 载荷
 	offset := ikev2.IKE_HEADER_LEN
 	genHeader, err := ikev2.DecodePayloadHeader(data[offset : offset+4])
@@ -63,7 +54,7 @@ func (s *Session) decryptAndParse(data []byte) (uint32, []ikev2.Payload, error) 
 	}
 
 	skBodyLen := int(genHeader.PayloadLength) - 4
-	if offset+4+skBodyLen > len(data) {
+	if skBodyLen < 0 || offset+4+skBodyLen != len(data) {
 		return 0, nil, errors.New("SK 载荷太短")
 	}
 
@@ -74,8 +65,13 @@ func (s *Session) decryptAndParse(data []byte) (uint32, []ikev2.Payload, error) 
 		return 0, nil, errors.New("SK 内容对于 IV 来说太短")
 	}
 	iv := skContent[:ivSize]
-	aad := data[:ikev2.IKE_HEADER_LEN]
+	// RFC5282: AEAD authenticates the generic SK header as well as IKE.
+	aad := data[:ikev2.IKE_HEADER_LEN+4]
 	key := s.Keys.SK_er
+	integrityKey := s.Keys.SK_ar
+	if s.localResponder {
+		key, integrityKey = s.Keys.SK_ei, s.Keys.SK_ai
+	}
 
 	ciphertext := skContent[ivSize:]
 	if !s.ikeIsAEAD && s.IntegAlg != nil {
@@ -87,7 +83,7 @@ func (s *Session) decryptAndParse(data []byte) (uint32, []ikev2.Payload, error) 
 		ciphertext = ciphertext[:len(ciphertext)-icvSize]
 
 		dataToVerify := data[:ikev2.IKE_HEADER_LEN+4+ivSize+len(ciphertext)]
-		if !s.IntegAlg.Verify(s.Keys.SK_ar, dataToVerify, receivedICV) {
+		if !s.IntegAlg.Verify(integrityKey, dataToVerify, receivedICV) {
 			return 0, nil, errors.New("IKE 完整性校验失败")
 		}
 	}
@@ -98,16 +94,14 @@ func (s *Session) decryptAndParse(data []byte) (uint32, []ikev2.Payload, error) 
 			ikev2.EncrToString(s.ikeEncrID), s.ikeIsAEAD, ivSize, len(ciphertext), err)
 	}
 
-	if !s.ikeIsAEAD {
-		if len(plaintext) < 1 {
-			return 0, nil, errors.New("SK 明文太短")
-		}
-		padLen := int(plaintext[len(plaintext)-1])
-		if len(plaintext) < 1+padLen {
-			return 0, nil, errors.New("SK 填充长度无效")
-		}
-		plaintext = plaintext[:len(plaintext)-1-padLen]
+	if len(plaintext) < 1 {
+		return 0, nil, errors.New("SK 明文太短")
 	}
+	padLen := int(plaintext[len(plaintext)-1])
+	if len(plaintext) < 1+padLen {
+		return 0, nil, errors.New("SK 填充长度无效")
+	}
+	plaintext = plaintext[:len(plaintext)-1-padLen]
 
 	payloads, err := s.parsePayloads(plaintext, genHeader.NextPayload)
 	return header.MessageID, payloads, err
@@ -118,9 +112,9 @@ func (s *Session) parsePayloads(data []byte, firstType ikev2.PayloadType) ([]ike
 	offset := 0
 	nextType := firstType
 
-	for nextType != ikev2.NoNextPayload && offset < len(data) {
+	for nextType != ikev2.NoNextPayload {
 		if offset+4 > len(data) {
-			break
+			return nil, errors.New("incomplete IKE payload chain")
 		}
 		genHeader, err := ikev2.DecodePayloadHeader(data[offset : offset+4])
 		if err != nil {
@@ -128,7 +122,7 @@ func (s *Session) parsePayloads(data []byte, firstType ikev2.PayloadType) ([]ike
 		}
 
 		length := int(genHeader.PayloadLength)
-		if offset+length > len(data) {
+		if length < 4 || offset+length > len(data) {
 			return nil, errors.New("载荷太短")
 		}
 
@@ -159,6 +153,9 @@ func (s *Session) parsePayloads(data []byte, firstType ikev2.PayloadType) ([]ike
 		case ikev2.NiNr:
 			p, err = ikev2.DecodePayloadNonce(body)
 		default:
+			if genHeader.Critical {
+				return nil, errors.New("unsupported critical IKE payload")
+			}
 			p = &ikev2.RawPayload{PType: nextType, Data: body}
 		}
 
@@ -171,6 +168,9 @@ func (s *Session) parsePayloads(data []byte, firstType ikev2.PayloadType) ([]ike
 
 		nextType = genHeader.NextPayload
 		offset += length
+	}
+	if offset != len(data) {
+		return nil, errors.New("trailing IKE payload bytes")
 	}
 	return payloads, nil
 }
@@ -203,6 +203,10 @@ func (s *Session) encryptAndWrapWithMsgID(payloads []ikev2.Payload, exchangeType
 	}
 
 	key := s.Keys.SK_ei
+	integrityKey := s.Keys.SK_ai
+	if s.localResponder {
+		key, integrityKey = s.Keys.SK_er, s.Keys.SK_ar
+	}
 	iv, err := crypto.RandomBytes(s.EncAlg.IVSize())
 	if err != nil {
 		return nil, err
@@ -214,21 +218,22 @@ func (s *Session) encryptAndWrapWithMsgID(payloads []ikev2.Payload, exchangeType
 	}
 
 	plainToEncrypt := innerData
-	expectedCipherLen := len(plainToEncrypt)
-	if s.ikeIsAEAD {
-		expectedCipherLen += 16
-	} else {
+	padLen := 0
+	if !s.ikeIsAEAD {
 		blockSize := s.EncAlg.BlockSize()
 		if blockSize <= 0 {
 			return nil, errors.New("无效的块大小")
 		}
-		padLen := 0
 		if rem := (len(plainToEncrypt) + 1) % blockSize; rem != 0 {
 			padLen = blockSize - rem
 		}
-		plainToEncrypt = append(plainToEncrypt, make([]byte, padLen)...)
-		plainToEncrypt = append(plainToEncrypt, byte(padLen))
-		expectedCipherLen = len(plainToEncrypt)
+	}
+	// Pad Length is mandatory even when AEAD requires no block padding.
+	plainToEncrypt = append(plainToEncrypt, make([]byte, padLen)...)
+	plainToEncrypt = append(plainToEncrypt, byte(padLen))
+	expectedCipherLen := len(plainToEncrypt)
+	if s.ikeIsAEAD {
+		expectedCipherLen += 16
 	}
 
 	nextPayload := ikev2.NoNextPayload
@@ -249,8 +254,15 @@ func (s *Session) encryptAndWrapWithMsgID(payloads []ikev2.Payload, exchangeType
 	if isResponse {
 		hdr.Flags |= ikev2.FlagResponse
 	}
+	if s.localResponder {
+		hdr.Flags &^= ikev2.FlagInitiator
+	}
 
-	aad := hdr.Encode()
+	skHeader := &ikev2.PayloadHeader{
+		NextPayload:   nextPayload,
+		PayloadLength: uint16(4 + len(iv) + expectedCipherLen + icvSize),
+	}
+	aad := append(hdr.Encode(), skHeader.Encode()...)
 	ciphertext, err := s.EncAlg.Encrypt(plainToEncrypt, key, iv, aad)
 	if err != nil {
 		return nil, err
@@ -260,16 +272,10 @@ func (s *Session) encryptAndWrapWithMsgID(payloads []ikev2.Payload, exchangeType
 		return nil, errors.New("加密输出长度不匹配")
 	}
 
-	skHeader := &ikev2.PayloadHeader{
-		NextPayload:   nextPayload,
-		PayloadLength: uint16(4 + len(iv) + len(ciphertext) + icvSize),
-	}
-
-	packet := append(aad, skHeader.Encode()...)
-	packet = append(packet, iv...)
+	packet := append(aad, iv...)
 	packet = append(packet, ciphertext...)
 	if !s.ikeIsAEAD && s.IntegAlg != nil {
-		icv := s.IntegAlg.Compute(s.Keys.SK_ai, packet)
+		icv := s.IntegAlg.Compute(integrityKey, packet)
 		packet = append(packet, icv...)
 	}
 	if uint32(len(packet)) != hdr.Length {

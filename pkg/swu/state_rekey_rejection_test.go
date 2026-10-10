@@ -38,7 +38,7 @@ func TestChildRekeyPreservesState_whenProtectedNotify14(t *testing.T) {
 				if err != nil || header.NextPayload != ikev2.SK || header.ExchangeType != ikev2.CREATE_CHILD_SA {
 					t.Fatal("expected protected CREATE_CHILD_SA request")
 				}
-				messageID, payloads, err := sess.decryptAndParse(request)
+				messageID, payloads, err := testPeerReceiver(sess).decryptAndParse(request)
 				if err != nil || messageID != header.MessageID || len(payloads) != 5 {
 					t.Fatal("request payload decode failed")
 				}

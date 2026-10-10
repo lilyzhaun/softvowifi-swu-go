@@ -63,6 +63,8 @@ type TaskManager struct {
 	wakeupCh chan struct{} // 用于有新包入列时唤醒内部守护循环
 
 	sendFunc func([][]byte) error // 回拨底层的发包接口
+	// Session supplies negotiated SPI/integrity validation; called before commit.
+	responseValidator func(*OutgoingMessage, []byte) (bool, error)
 }
 
 func NewTaskManager(ctx context.Context, config *RetryConfig, winSize int, sendFunc func([][]byte) error) *TaskManager {
@@ -156,6 +158,10 @@ func (tm *TaskManager) activateMessage(msg *OutgoingMessage) {
 
 // HandleResponse 被解码器（IKE_Control）截获时调用，剥离其事务通道以反馈并接纳后续排队者
 func (tm *TaskManager) HandleResponse(msgID uint32, responseData []byte) bool {
+	return tm.handleResponse(msgID, responseData, nil)
+}
+
+func (tm *TaskManager) handleResponse(msgID uint32, responseData []byte, commit func() error) bool {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -164,6 +170,22 @@ func (tm *TaskManager) HandleResponse(msgID uint32, responseData []byte) bool {
 	}
 	msg, ok := tm.pending[msgID]
 	if !ok {
+		return false
+	}
+	header, err := ikev2.DecodeHeader(responseData)
+	if err != nil || int(header.Length) != len(responseData) || header.Version>>4 != 2 ||
+		header.MessageID != msgID || header.ExchangeType != msg.Exchange ||
+		header.Flags&ikev2.FlagResponse == 0 {
+		return false
+	}
+	commitPeer := true
+	if tm.responseValidator != nil {
+		commitPeer, err = tm.responseValidator(msg, responseData)
+		if err != nil {
+			return false
+		}
+	}
+	if commitPeer && commit != nil && commit() != nil {
 		return false
 	}
 

@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/1239t/swu-go/pkg/ikev2"
 )
 
 func newIdleWindow(t *testing.T, size int) (*TaskManager, chan [][]byte) {
@@ -113,28 +115,28 @@ func TestWindowQueue_preservesBackoffAndPackets_whenRetryDue(t *testing.T) {
 
 func TestWindowQueue_deliversOnceAndPumpsFIFO_whenResponseKnown(t *testing.T) {
 	manager, sent := newIdleWindow(t, 1)
-	original := manager.EnqueueRequest(1, 0, nil, [][]byte{{1}})
-	queued := manager.EnqueueRequest(2, 0, nil, [][]byte{{2}})
+	original := manager.EnqueueRequest(1, ikev2.INFORMATIONAL, nil, [][]byte{{1}})
+	queued := manager.EnqueueRequest(2, ikev2.INFORMATIONAL, nil, [][]byte{{2}})
 
-	accepted := manager.HandleResponse(1, []byte{42})
+	accepted := manager.HandleResponse(1, windowTestResponse(1))
 
 	if !accepted {
 		t.Fatal("known response rejected")
 	}
-	requireWindowResponse(t, original)
+	requireWindowResponse(t, original, 1)
 	requireWindowSends(t, sent, [][][]byte{{{1}}, {{2}}})
 	for _, id := range []uint32{1, 99} {
-		if manager.HandleResponse(id, []byte{42}) {
+		if manager.HandleResponse(id, windowTestResponse(id)) {
 			t.Fatal("late or unknown response accepted")
 		}
 	}
 	if len(sent) != 0 || len(manager.pending) != 1 {
 		t.Fatal("unknown response changed scheduling")
 	}
-	if !manager.HandleResponse(2, []byte{42}) {
+	if !manager.HandleResponse(2, windowTestResponse(2)) {
 		t.Fatal("queued request lost its response")
 	}
-	requireWindowResponse(t, queued)
+	requireWindowResponse(t, queued, 2)
 	requireWindowEmpty(t, manager)
 }
 

@@ -66,12 +66,13 @@ func newPostEAPSession(t *testing.T) (*Session, *int) {
 	key := bytes.Repeat([]byte{9}, 32)
 	mac := bytes.Repeat([]byte{7}, 32)
 	sess.EncAlg, sess.IntegAlg = enc, integ
+	sess.SPIr = 4321
 	sess.PRFAlg = crypto.PRF_HMAC_SHA2_256
 	sess.Keys = &ikev2.IKESAKeys{
 		SK_ei: key,
-		SK_er: key,
+		SK_er: bytes.Repeat([]byte{10}, 32),
 		SK_ai: mac,
-		SK_ar: mac,
+		SK_ar: bytes.Repeat([]byte{8}, 32),
 		SK_d:  bytes.Repeat([]byte{5}, 32),
 		SK_pi: bytes.Repeat([]byte{4}, 32),
 		SK_pr: bytes.Repeat([]byte{3}, 32),
@@ -138,11 +139,7 @@ func mutationNotifies() []ikev2.Payload {
 
 func wrapAuth(t *testing.T, sess *Session, payloads []ikev2.Payload) []byte {
 	t.Helper()
-	raw, err := sess.encryptAndWrap(payloads, ikev2.IKE_AUTH, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return raw
+	return encodePeerPacket(t, sess, payloads, ikev2.IKE_AUTH, sess.NextSequenceNumber(), true)
 }
 
 func snapPostEAP(s *Session, ticketCB int) postEAPSnap {

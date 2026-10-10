@@ -1,6 +1,7 @@
 package swu
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -204,6 +205,10 @@ func (s *Session) fragmentMessage(payloads []ikev2.Payload, exchangeType ikev2.E
 // buildSKFPacket 构建单个 SKF (Encrypted Fragment) 数据包
 func (s *Session) buildSKFPacket(plaintext []byte, fragNum, totalFrags uint16, msgID uint32, exchangeType ikev2.ExchangeType, firstPayloadType ikev2.PayloadType) ([]byte, error) {
 	key := s.Keys.SK_ei
+	integrityKey := s.Keys.SK_ai
+	if s.localResponder {
+		key, integrityKey = s.Keys.SK_er, s.Keys.SK_ar
+	}
 	iv, err := crypto.RandomBytes(s.EncAlg.IVSize())
 	if err != nil {
 		return nil, err
@@ -215,21 +220,23 @@ func (s *Session) buildSKFPacket(plaintext []byte, fragNum, totalFrags uint16, m
 	}
 
 	// 加密明文
-	plainToEncrypt := plaintext
+	// The input can be a slice of a shared multi-fragment message.
+	plainToEncrypt := bytes.Clone(plaintext)
+	padLen := 0
+	if !s.ikeIsAEAD {
+		blockSize := s.EncAlg.BlockSize()
+		if blockSize <= 0 {
+			return nil, errors.New("无效的块大小")
+		}
+		if rem := (len(plainToEncrypt) + 1) % blockSize; rem != 0 {
+			padLen = blockSize - rem
+		}
+	}
+	plainToEncrypt = append(plainToEncrypt, make([]byte, padLen)...)
+	plainToEncrypt = append(plainToEncrypt, byte(padLen))
 	expectedCipherLen := len(plainToEncrypt)
 	if s.ikeIsAEAD {
-		expectedCipherLen += 16 // GCM tag
-	} else {
-		blockSize := s.EncAlg.BlockSize()
-		if blockSize > 0 {
-			padLen := 0
-			if rem := (len(plainToEncrypt) + 1) % blockSize; rem != 0 {
-				padLen = blockSize - rem
-			}
-			plainToEncrypt = append(plainToEncrypt, make([]byte, padLen)...)
-			plainToEncrypt = append(plainToEncrypt, byte(padLen))
-			expectedCipherLen = len(plainToEncrypt)
-		}
+		expectedCipherLen += 16
 	}
 
 	// Fragment Header: Fragment Number (2) + Total Fragments (2)
@@ -257,7 +264,15 @@ func (s *Session) buildSKFPacket(plaintext []byte, fragNum, totalFrags uint16, m
 		MessageID:    msgID,
 		Length:       uint32(ikev2.IKE_HEADER_LEN) + uint32(skfPayloadLen),
 	}
-	aad := hdr.Encode()
+	if s.localResponder {
+		hdr.Flags &^= ikev2.FlagInitiator
+	}
+	skfGenHeader := &ikev2.PayloadHeader{
+		NextPayload:   nextPayload,
+		PayloadLength: skfPayloadLen,
+	}
+	aad := append(hdr.Encode(), skfGenHeader.Encode()...)
+	aad = append(aad, fragHeader...)
 
 	// 加密
 	ciphertext, err := s.EncAlg.Encrypt(plainToEncrypt, key, iv, aad)
@@ -265,19 +280,11 @@ func (s *Session) buildSKFPacket(plaintext []byte, fragNum, totalFrags uint16, m
 		return nil, err
 	}
 
-	// SKF Generic Header
-	skfGenHeader := &ikev2.PayloadHeader{
-		NextPayload:   nextPayload,
-		PayloadLength: skfPayloadLen,
-	}
-
 	// 组装数据包
-	packet := append(aad, skfGenHeader.Encode()...)
-	packet = append(packet, fragHeader...)
-	packet = append(packet, iv...)
+	packet := append(aad, iv...)
 	packet = append(packet, ciphertext...)
 	if !s.ikeIsAEAD && s.IntegAlg != nil {
-		icv := s.IntegAlg.Compute(s.Keys.SK_ai, packet)
+		icv := s.IntegAlg.Compute(integrityKey, packet)
 		packet = append(packet, icv...)
 	}
 
@@ -286,9 +293,12 @@ func (s *Session) buildSKFPacket(plaintext []byte, fragNum, totalFrags uint16, m
 
 // decryptSKF 解密单个 SKF 载荷，返回明文、Fragment Number、Total Fragments
 func (s *Session) decryptSKF(data []byte) (plaintext []byte, fragNum, totalFrags uint16, msgID uint32, err error) {
-	header, err := ikev2.DecodeHeader(data)
+	header, err := s.protectedHeader(data)
 	if err != nil {
 		return nil, 0, 0, 0, err
+	}
+	if header.NextPayload != ikev2.EncryptedFragment {
+		return nil, 0, 0, 0, ErrInvalidProtectedIKE
 	}
 	msgID = header.MessageID
 
@@ -302,7 +312,9 @@ func (s *Session) decryptSKF(data []byte) (plaintext []byte, fragNum, totalFrags
 	if err != nil {
 		return nil, 0, 0, 0, err
 	}
-	_ = genHeader
+	if int(genHeader.PayloadLength)+ikev2.IKE_HEADER_LEN != len(data) || genHeader.PayloadLength < 8 {
+		return nil, 0, 0, 0, ErrInvalidProtectedIKE
+	}
 	offset += 4
 
 	// Fragment Header (4 bytes)
@@ -311,6 +323,9 @@ func (s *Session) decryptSKF(data []byte) (plaintext []byte, fragNum, totalFrags
 	}
 	fragNum = binary.BigEndian.Uint16(data[offset : offset+2])
 	totalFrags = binary.BigEndian.Uint16(data[offset+2 : offset+4])
+	if fragNum == 0 || totalFrags == 0 || fragNum > totalFrags || totalFrags > maxFragments {
+		return nil, 0, 0, 0, ErrInvalidProtectedIKE
+	}
 	offset += 4
 
 	// IV
@@ -322,8 +337,12 @@ func (s *Session) decryptSKF(data []byte) (plaintext []byte, fragNum, totalFrags
 	offset += ivSize
 
 	// Ciphertext + ICV
-	aad := data[:ikev2.IKE_HEADER_LEN]
+	aad := data[:ikev2.IKE_HEADER_LEN+8]
 	key := s.Keys.SK_er
+	integrityKey := s.Keys.SK_ar
+	if s.localResponder {
+		key, integrityKey = s.Keys.SK_ei, s.Keys.SK_ai
+	}
 	ciphertext := data[offset:]
 
 	if !s.ikeIsAEAD && s.IntegAlg != nil {
@@ -336,7 +355,7 @@ func (s *Session) decryptSKF(data []byte) (plaintext []byte, fragNum, totalFrags
 
 		// 完整性校验范围: IKE Header + Generic Header + Fragment Header + IV + Ciphertext
 		dataToVerify := data[:ikev2.IKE_HEADER_LEN+4+4+ivSize+len(ciphertext)]
-		if !s.IntegAlg.Verify(s.Keys.SK_ar, dataToVerify, receivedICV) {
+		if !s.IntegAlg.Verify(integrityKey, dataToVerify, receivedICV) {
 			return nil, 0, 0, 0, errors.New("SKF 完整性校验失败")
 		}
 	}
@@ -346,17 +365,15 @@ func (s *Session) decryptSKF(data []byte) (plaintext []byte, fragNum, totalFrags
 		return nil, 0, 0, 0, fmt.Errorf("SKF 解密失败: %v", err)
 	}
 
-	// 去除 CBC padding
-	if !s.ikeIsAEAD {
-		if len(plaintext) < 1 {
-			return nil, 0, 0, 0, errors.New("SKF 明文太短")
-		}
-		padLen := int(plaintext[len(plaintext)-1])
-		if len(plaintext) < 1+padLen {
-			return nil, 0, 0, 0, errors.New("SKF 填充长度无效")
-		}
-		plaintext = plaintext[:len(plaintext)-1-padLen]
+	// Pad Length is also present with AEAD (RFC5282).
+	if len(plaintext) < 1 {
+		return nil, 0, 0, 0, errors.New("SKF 明文太短")
 	}
+	padLen := int(plaintext[len(plaintext)-1])
+	if len(plaintext) < 1+padLen {
+		return nil, 0, 0, 0, errors.New("SKF 填充长度无效")
+	}
+	plaintext = plaintext[:len(plaintext)-1-padLen]
 
 	return plaintext, fragNum, totalFrags, msgID, nil
 }

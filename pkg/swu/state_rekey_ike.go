@@ -159,6 +159,7 @@ func (s *Session) handleRekeyIKESAResp(
 	s.SPIi = newSPIi
 	s.SPIr = sel.newSPIr
 	s.Keys = newKeys
+	s.localResponder = false
 	s.SequenceNumber.Store(0)
 	s.DH = newDH
 
@@ -285,6 +286,7 @@ func (s *Session) HandleRekeyIKESARequest(msgID uint32, payloads []ikev2.Payload
 	s.SPIi = peerSPI
 	s.SPIr = newSPIr
 	s.Keys = newKeys
+	s.localResponder = true
 	s.SequenceNumber.Store(0)
 	s.DH = newDH
 	s.lastRekeyTime = time.Now()

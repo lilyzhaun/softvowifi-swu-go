@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/1239t/swu-go/pkg/ikev2"
 )
 
 func requireWindowClosed(t *testing.T, completion <-chan []byte) {
@@ -32,11 +34,16 @@ func awaitWindowClosed(t *testing.T, completion <-chan []byte) {
 	}
 }
 
-func requireWindowResponse(t *testing.T, completion <-chan []byte) {
+func windowTestResponse(id uint32) []byte {
+	return (&ikev2.IKEHeader{Version: 0x20, ExchangeType: ikev2.INFORMATIONAL,
+		Flags: ikev2.FlagResponse, MessageID: id, Length: 28}).Encode()
+}
+
+func requireWindowResponse(t *testing.T, completion <-chan []byte, id uint32) {
 	t.Helper()
 	select {
 	case response, open := <-completion:
-		if !open || !bytes.Equal(response, []byte{42}) {
+		if !open || !bytes.Equal(response, windowTestResponse(id)) {
 			t.Fatalf("response = %v, open = %v", response, open)
 		}
 	default:
@@ -130,9 +137,9 @@ func TestWindowLifecycle_preservesOwner_whenDuplicateID(t *testing.T) {
 			})
 			defer manager.Stop()
 			if scenario.queued {
-				manager.EnqueueRequest(1, 0, nil, nil)
+				manager.EnqueueRequest(1, ikev2.INFORMATIONAL, nil, nil)
 			}
-			original := manager.EnqueueRequest(7, 0, nil, nil)
+			original := manager.EnqueueRequest(7, ikev2.INFORMATIONAL, nil, nil)
 
 			// When
 			duplicate := manager.EnqueueRequest(7, 0, nil, nil)
@@ -142,18 +149,18 @@ func TestWindowLifecycle_preservesOwner_whenDuplicateID(t *testing.T) {
 			if len(sent) != 1 {
 				t.Fatal("duplicate sent a second request")
 			}
-			if scenario.queued && !manager.HandleResponse(1, []byte{42}) {
+			if scenario.queued && !manager.HandleResponse(1, windowTestResponse(1)) {
 				t.Fatal("blocking request lost its owner")
 			}
-			if !manager.HandleResponse(7, []byte{42}) {
+			if !manager.HandleResponse(7, windowTestResponse(7)) {
 				t.Fatal("original request lost its owner")
 			}
-			requireWindowResponse(t, original)
-			reused := manager.EnqueueRequest(7, 0, nil, nil)
-			if !manager.HandleResponse(7, []byte{42}) {
+			requireWindowResponse(t, original, 7)
+			reused := manager.EnqueueRequest(7, ikev2.INFORMATIONAL, nil, nil)
+			if !manager.HandleResponse(7, windowTestResponse(7)) {
 				t.Fatal("completed ID could not be reused")
 			}
-			requireWindowResponse(t, reused)
+			requireWindowResponse(t, reused, 7)
 			wantSends := 2
 			if scenario.queued {
 				wantSends++
@@ -171,7 +178,7 @@ func TestWindowLifecycle_releasesRequests_whenCancelRacesAdmissionAndResponse(t 
 		// Given
 		parent, cancel := context.WithCancel(context.Background())
 		manager := NewTaskManager(parent, &RetryConfig{InitialTimeout: time.Hour}, 1, func([][]byte) error { return nil })
-		pending := manager.EnqueueRequest(1, 0, nil, nil)
+		pending := manager.EnqueueRequest(1, ikev2.INFORMATIONAL, nil, nil)
 		queued := manager.EnqueueRequest(2, 0, nil, nil)
 		var incoming <-chan []byte
 		var accepted bool
@@ -180,7 +187,7 @@ func TestWindowLifecycle_releasesRequests_whenCancelRacesAdmissionAndResponse(t 
 		workers.Add(4)
 		for _, action := range []func(){manager.Stop, cancel,
 			func() { incoming = manager.EnqueueRequest(3, 0, nil, nil) },
-			func() { accepted = manager.HandleResponse(1, []byte{42}) },
+			func() { accepted = manager.HandleResponse(1, windowTestResponse(1)) },
 		} {
 			go func() { defer workers.Done(); <-start; action() }()
 		}
@@ -197,7 +204,7 @@ func TestWindowLifecycle_releasesRequests_whenCancelRacesAdmissionAndResponse(t 
 			t.Fatal("concurrent calls did not return")
 		}
 		if accepted {
-			requireWindowResponse(t, pending)
+			requireWindowResponse(t, pending, 1)
 		} else {
 			awaitWindowClosed(t, pending)
 		}

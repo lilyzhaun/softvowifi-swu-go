@@ -96,7 +96,7 @@ func exerciseChildRekey(t *testing.T, sess *Session, invoke func() error) error 
 		if header.ExchangeType != ikev2.CREATE_CHILD_SA || header.NextPayload != ikev2.SK {
 			t.Fatal("expected encrypted CREATE_CHILD_SA request")
 		}
-		_, payloads, err := sess.decryptAndParse(request)
+		_, payloads, err := testPeerReceiver(sess).decryptAndParse(request)
 		if err != nil {
 			t.Fatalf("REKEY request decode: %v", err)
 		}
@@ -186,7 +186,7 @@ func TestChildRekeyCallerCommitsOnceOnSuccess(t *testing.T) {
 			}
 			select {
 			case packet := <-pipe.sent:
-				_, payloads, err := sess.decryptAndParse(packet)
+				_, payloads, err := testPeerReceiver(sess).decryptAndParse(packet)
 				if err != nil || len(payloads) != 1 {
 					t.Fatalf("DELETE decode: %v", err)
 				}

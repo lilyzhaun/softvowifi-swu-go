@@ -1,6 +1,7 @@
 package swu
 
 import (
+	"bytes"
 	"net"
 	"testing"
 	"time"
@@ -129,9 +130,17 @@ func newPeerInformationalSession(t *testing.T) (*Session, *pipeTransport) {
 	if err != nil {
 		t.Fatalf("encrypter: %v", err)
 	}
-	key := make([]byte, enc.KeySize())
+	integ, err := crypto.GetIntegrityAlgorithm(uint16(ikev2.AUTH_HMAC_SHA2_256_128))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.SPIr = 4321
 	sess.EncAlg = enc
-	sess.Keys = &ikev2.IKESAKeys{SK_ei: key, SK_er: key}
+	sess.IntegAlg = integ
+	sess.Keys = &ikev2.IKESAKeys{
+		SK_ei: bytes.Repeat([]byte{1}, enc.KeySize()), SK_er: bytes.Repeat([]byte{2}, enc.KeySize()),
+		SK_ai: bytes.Repeat([]byte{3}, integ.KeySize()), SK_ar: bytes.Repeat([]byte{4}, integ.KeySize()),
+	}
 	pipe := &pipeTransport{
 		ike:  make(chan []byte, 1),
 		sent: make(chan []byte, 1),
@@ -158,16 +167,5 @@ func encodePeerRedirect(t *testing.T, sess *Session) []byte {
 
 func encodeInformational(t *testing.T, sess *Session, payload ikev2.Payload) []byte {
 	t.Helper()
-	pkt := ikev2.NewIKEPacket()
-	pkt.Header.SPIi = sess.SPIi
-	pkt.Header.SPIr = 1
-	pkt.Header.Version = 0x20
-	pkt.Header.ExchangeType = ikev2.INFORMATIONAL
-	pkt.Header.MessageID = 7
-	pkt.Payloads = []ikev2.Payload{payload}
-	raw, err := pkt.Encode()
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-	return raw
+	return encodePeerPacket(t, sess, []ikev2.Payload{payload}, ikev2.INFORMATIONAL, 7, false)
 }

@@ -52,7 +52,7 @@ func TestAUTH1OffersCompleteAES256SHA512ESP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, decoded, err := sess.decryptAndParse(raw)
+	_, decoded, err := testPeerReceiver(sess).decryptAndParse(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
