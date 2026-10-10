@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Private vulnerability report / 私密漏洞报告
+    url: https://github.com/lilyzhaun/softvowifi-swu-go/security/advisories/new
+    about: Do not publish authentication material, subscriber data or exploit details.
+  - name: Documentation / 使用说明
+    url: https://github.com/lilyzhaun/softvowifi-swu-go#readme
+    about: Read original module paths, explicit netlink replacement and security/testing limits.

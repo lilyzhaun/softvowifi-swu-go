@@ -1,0 +1,25 @@
+name: Feature request / 功能建议
+description: Explain the protocol/integration need and validation boundaries.
+title: "[Feature]: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Use case and current limitation
+      description: Distinguish a SWu capability from IMS, account, device or carrier prerequisites.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior, alternatives and validation
+      description: Include relevant standards, security, compatibility and owned-cleanup considerations.
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      options:
+        - label: This request contains no subscriber data, secrets, full config or raw captures.
+          required: true
