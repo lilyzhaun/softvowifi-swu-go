@@ -47,6 +47,7 @@ type OutgoingMessage struct {
 
 	// 信号通知通道：如果成功，把收到的解密包推入；如果彻底超时抛出 nil 关闭通道
 	CompletionCh chan []byte
+	response     *protectedIKEMessage // Published before CompletionCh; Session-only decoded delivery.
 }
 
 // TaskManager 用于接管原有的线性重试池，支撑滑动窗口概念 (Window Size)
@@ -64,7 +65,8 @@ type TaskManager struct {
 
 	sendFunc func([][]byte) error // 回拨底层的发包接口
 	// Session supplies negotiated SPI/integrity validation; called before commit.
-	responseValidator func(*OutgoingMessage, []byte) (bool, error)
+	responseValidator func(*OutgoingMessage, []byte) (*protectedIKEMessage, bool, error)
+	responseCleanup   func(*OutgoingMessage)
 }
 
 func NewTaskManager(ctx context.Context, config *RetryConfig, winSize int, sendFunc func([][]byte) error) *TaskManager {
@@ -99,6 +101,10 @@ func (tm *TaskManager) Stop() {
 
 // EnqueueRequest 将构筑好的包（可能是单包或者是多个 IKE 分片包）掷入调度器，返回接收通道
 func (tm *TaskManager) EnqueueRequest(msgID uint32, exchange ikev2.ExchangeType, payloads []ikev2.Payload, packets [][]byte) <-chan []byte {
+	return tm.enqueueRequest(msgID, exchange, payloads, packets).CompletionCh
+}
+
+func (tm *TaskManager) enqueueRequest(msgID uint32, exchange ikev2.ExchangeType, payloads []ikev2.Payload, packets [][]byte) *OutgoingMessage {
 	outMsg := &OutgoingMessage{
 		MsgID:        msgID,
 		Payloads:     payloads,
@@ -115,12 +121,12 @@ func (tm *TaskManager) EnqueueRequest(msgID uint32, exchange ikev2.ExchangeType,
 	_, duplicate := tm.pending[msgID]
 	if tm.ctx.Err() != nil || duplicate {
 		close(outMsg.CompletionCh)
-		return outMsg.CompletionCh
+		return outMsg
 	}
 	for _, queued := range tm.queue {
 		if queued.MsgID == msgID {
 			close(outMsg.CompletionCh)
-			return outMsg.CompletionCh
+			return outMsg
 		}
 	}
 
@@ -133,7 +139,7 @@ func (tm *TaskManager) EnqueueRequest(msgID uint32, exchange ikev2.ExchangeType,
 		tm.queue = append(tm.queue, outMsg)
 	}
 
-	return outMsg.CompletionCh
+	return outMsg
 }
 
 // 调度内部函数 (需加锁调用)
@@ -179,8 +185,9 @@ func (tm *TaskManager) handleResponse(msgID uint32, responseData []byte, commit 
 		return false
 	}
 	commitPeer := true
+	var response *protectedIKEMessage
 	if tm.responseValidator != nil {
-		commitPeer, err = tm.responseValidator(msg, responseData)
+		response, commitPeer, err = tm.responseValidator(msg, responseData)
 		if err != nil {
 			return false
 		}
@@ -191,6 +198,10 @@ func (tm *TaskManager) handleResponse(msgID uint32, responseData []byte, commit 
 
 	// 发出回执并清理
 	delete(tm.pending, msgID)
+	if tm.responseCleanup != nil {
+		tm.responseCleanup(msg)
+	}
+	msg.response = response
 	msg.CompletionCh <- responseData
 
 	// 窗口腾出，检查排队区提取下一个候补
@@ -222,6 +233,9 @@ func (tm *TaskManager) windowLoop() {
 			// 终止通知：清理所有频道
 			tm.mu.Lock()
 			for _, m := range tm.pending {
+				if tm.responseCleanup != nil {
+					tm.responseCleanup(m)
+				}
 				close(m.CompletionCh)
 			}
 			for _, m := range tm.queue {
@@ -259,6 +273,9 @@ func (tm *TaskManager) checkTimeouts() {
 				// 已死，打捞并踢下线
 				logger.Warn("IKE 请求遭遇硬超时，剔除 Window", logger.Uint32("msgID", id))
 				toDelete = append(toDelete, id)
+				if tm.responseCleanup != nil {
+					tm.responseCleanup(msg)
+				}
 				close(msg.CompletionCh)
 			} else {
 				// 惩罚增长并执行再次空投

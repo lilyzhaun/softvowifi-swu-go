@@ -15,7 +15,25 @@ import (
 )
 
 func Test_AKAIdentity_initiatorAUTHUsesOriginalIDi_whenInnerPermanent(t *testing.T) {
+	testAKAIdentityAUTH(t, "unfragmented")
+}
+
+func TestFragmentConnectCompletesLongIndependentAUTH(t *testing.T) {
+	for _, layout := range []string{"ordered", "reordered"} {
+		t.Run(layout, func(t *testing.T) { testAKAIdentityAUTH(t, layout) })
+	}
+}
+
+func testAKAIdentityAUTH(t *testing.T, layout string) {
+	t.Helper()
 	peer := newAKAWirePeer(t)
+	send := func(payloads []akaWirePayload) {
+		if layout == "unfragmented" {
+			peer.send(t, peer.protect(t, payloads))
+			return
+		}
+		peer.sendFragmented(t, payloads, layout == "reordered")
+	}
 	sess, provider := identitySession(t)
 	sess.cfg.FastReauthID = "original-pseudonym@public.invalid"
 	sess.cfg.LocalAddr, sess.cfg.EpDGAddr = "127.0.0.1", "127.0.0.1"
@@ -52,7 +70,7 @@ func Test_AKAIdentity_initiatorAUTHUsesOriginalIDi_whenInnerPermanent(t *testing
 		t.Fatal("fixture must emit pseudonym IDi")
 	}
 	identityReq := identityRequest(0xcd, 10, 1, 0, 0)
-	peer.send(t, peer.protect(t, []akaWirePayload{{kind: 48, body: identityReq}}))
+	send([]akaWirePayload{{kind: 48, body: identityReq}})
 	identityResp := peer.decrypt(t, peer.receive(t))
 	if len(identityResp) != 1 || !bytes.Equal(identityResp[0].body, identityResponse(0xcd, identityNAI)) {
 		t.Fatal("inner permanent Identity response differs")
@@ -60,7 +78,7 @@ func Test_AKAIdentity_initiatorAUTHUsesOriginalIDi_whenInnerPermanent(t *testing
 	digest := sha1.Sum(append(bytes.Clone(identityReq), identityResp[0].body...))
 	keys := referenceAKAKeys(provider, false)
 	challenge := identityChallenge(t, keys[16:32], append([]byte{134, 6, 0, 0}, digest[:]...))
-	peer.send(t, peer.protect(t, []akaWirePayload{{kind: 48, body: challenge}}))
+	send([]akaWirePayload{{kind: 48, body: challenge}})
 	response := peer.decrypt(t, peer.receive(t))
 	if len(response) != 1 || response[0].body[5] != 1 {
 		t.Fatal("missing Challenge response")
@@ -69,9 +87,9 @@ func Test_AKAIdentity_initiatorAUTHUsesOriginalIDi_whenInnerPermanent(t *testing
 		t.Fatal(err)
 	}
 	idrBody := append([]byte{2, 0, 0, 0}, []byte(testIDrFQDN)...)
-	peer.send(t, peer.protect(t, []akaWirePayload{
+	send([]akaWirePayload{
 		{kind: 36, body: idrBody}, {kind: 48, body: []byte{3, 0xce, 0, 4}},
-	}))
+	})
 	authPayloads := peer.decrypt(t, peer.receive(t))
 	if len(authPayloads) != 1 || authPayloads[0].kind != 39 || len(authPayloads[0].body) != 36 || authPayloads[0].body[0] != 2 {
 		t.Fatal("EAP Success did not produce shared-key initiator AUTH")
@@ -91,13 +109,17 @@ func Test_AKAIdentity_initiatorAUTHUsesOriginalIDi_whenInnerPermanent(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	peer.send(t, peer.protect(t, []akaWirePayload{
+	final := []akaWirePayload{
 		{kind: 39, body: append([]byte{2, 0, 0, 0}, responderAUTH...)},
 		{kind: 47, body: []byte{2, 0, 0, 0, 0, 1, 0, 4, 192, 0, 2, 10}},
 		{kind: 33, body: childBody},
 		{kind: 44, body: []byte{1, 0, 0, 0, 7, 0, 0, 16, 0, 0, 255, 255, 192, 0, 2, 10, 192, 0, 2, 10}},
 		{kind: 45, body: []byte{1, 0, 0, 0, 7, 0, 0, 16, 0, 0, 255, 255, 0, 0, 0, 0, 255, 255, 255, 255}},
-	}))
+	}
+	if layout != "unfragmented" {
+		final = append(final, akaWirePayload{kind: 41, body: independentNotifyBody(16432, bytes.Repeat([]byte{0x71}, 3000))})
+	}
+	send(final)
 	select {
 	case <-established:
 		cancel()

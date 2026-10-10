@@ -36,25 +36,23 @@ func (s *Session) protectedHeader(data []byte) (*ikev2.IKEHeader, error) {
 
 // The bool permits endpoint commit. A strict proposal-number rejection can be
 // delivered solely as a fresh-Session retry hint, without accepting its endpoint.
-func (s *Session) validateWindowResponse(msg *OutgoingMessage, data []byte) (bool, error) {
+func (s *Session) validateWindowResponse(msg *OutgoingMessage, data []byte) (*protectedIKEMessage, bool, error) {
 	if msg.Exchange == ikev2.IKE_SA_INIT {
 		if len(msg.Packets) != 1 {
-			return false, ikev2.ErrInitResponse
+			return nil, false, ikev2.ErrInitResponse
 		}
 		_, err := ikev2.DecodeInitResponse(data, msg.Packets[0])
 		// This strictly rejected response only authorizes a fresh original-suite
 		// retry. Deliver the typed error to Connect, never commit its SA state.
 		var numbering *ikev2.InitProposalNumberError
 		if errors.As(err, &numbering) {
-			return false, nil
+			return nil, false, nil
 		}
-		return err == nil, err
+		return nil, err == nil, err
 	}
-	if data[16] == byte(ikev2.EncryptedFragment) {
-		// Integrity validation only: fragment transaction assembly is separate.
-		_, _, _, _, err := s.decryptSKF(data)
-		return err == nil, err
+	message, err := s.decodeProtectedIKE(data)
+	if err == nil && message == nil {
+		err = errFragmentIncomplete
 	}
-	_, _, err := s.decryptAndParse(data)
-	return err == nil, err
+	return message, err == nil, err
 }

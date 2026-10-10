@@ -70,6 +70,10 @@
 
 基准`171bdb5`、分支`fix/a02-partial-address-families`。正常标准路径已定位未分配族选择器被误作整包拒绝；按RFC7296§2.9/3.15.4，在原全部严格报价/CP/TS检查后取已分配且双向有效交集，未分配族不进入运行配置/初始及换钥XFRM/路由。已分配外国host、无有效族及坏未用TS仍拒绝；原算法/身份/请求/运营商配置不改，无失败安全降级。部分分配及策略/路由直接RED→GREEN、全库770PASS22既有内核opt-in跳过/vet通过；仅族约束，不冒称族内任意范围/端口精确内核enforcement或自然换钥。详见[事务专题](docs/initial-child-transaction.md)。来源只RFC及原维护源码，无外部客户端复制，MIT/module/unknown归属保持。
 
+### A03：完整认证分片与逻辑事务交付
+
+基准`dbe7579`、分支`fix/a03-fragment-transaction`。首片类型保存、完整认证/解析后完成窗口与接收提交，以私有已解析消息避免再次消费最后一片；原SPI/角色/完整性/精确结构/EAP/Child门禁不减。按RFC7383§2.5–2.6.1绑定SA key代次/I-R/exchange/MID，有界片数/字节/在途组/固定超时/生命周期释放、认证PMTU重启及有界已处理请求响应缓存。直接与独立正常UDP长AUTH先29FAIL5PASS，最终聚焦52PASS/全库819PASS22旧内核opt-in跳过/vet通过；另有消费者旧pin三叶RED。没有外部客户端复制或新算法/报价/运营商分支，MIT/module/unknown来源不变；A04并发MID/全SA replay/证书链/实卡分片和长期不由本项追认，详见[专题](docs/fragment-transactions.md)。
+
 ## 历史：本地维护跨度（2026-09-15 首导前源码就绪核对）
 
 首次本地导入已经包含 A/B；之后的维护远不止两个修改。以下为可追溯的本地历史分组与测试入口，不是相对纯上游的完整 diff 或逐行法律审查，未找到的首次导入前来源继续 unknown。

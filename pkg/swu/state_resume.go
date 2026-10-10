@@ -153,11 +153,7 @@ func (s *Session) sendIkeAuthChildless() error {
 
 	// 如果服务端认出 Resume，它可能直接略过 EAP 丢回加密的 AUTH Final 响应！
 	// 我们尝试解析最终 AUTH。
-	msgID, parsedPayloads, err := s.decryptAndParse(respData)
-	if err != nil {
-		return fmt.Errorf("Resume Auth 解析错误: %v", err)
-	}
-	_ = msgID
+	parsedPayloads := respData.payloads
 
 	// 检查是否有 EAP 载荷？ 极少数 ePDG 可能会回退到索要求 Auth。但照理说不该有 EAP。
 	var eapPayload *ikev2.EncryptedPayloadEAP
@@ -172,5 +168,5 @@ func (s *Session) sendIkeAuthChildless() error {
 	}
 
 	// 如果没有 EAP，这正是最终的配置和 Child SA！直接移交给 handleIKEAuthFinalResp
-	return s.handleIKEAuthFinalResp(respData)
+	return s.handleIKEAuthFinalParsed(parsedPayloads)
 }

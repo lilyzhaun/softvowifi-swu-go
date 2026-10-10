@@ -11,6 +11,9 @@ func TestReceiveRoleSwitchesOnPeerInitiatedIKERekey(t *testing.T) {
 	pipe := &pipeTransport{sent: make(chan []byte, 1)}
 	s.socket = pipe
 	oldPeer := testPeerReceiver(s)
+	if _, _, err := s.decryptAndParse(independentSKF(t, s, []byte{0}, ikev2.N, 1, 2, ikev2.INFORMATIONAL, 3, false)); err != nil {
+		t.Fatal(err)
+	}
 	spi := []byte{1, 2, 3, 4, 5, 6, 7, 8}
 	request := []ikev2.Payload{
 		&ikev2.EncryptedPayloadSA{Proposals: []*ikev2.Proposal{s.ikeRekeyProposal(spi)}},
@@ -22,6 +25,9 @@ func TestReceiveRoleSwitchesOnPeerInitiatedIKERekey(t *testing.T) {
 	}
 	if !s.localResponder {
 		t.Fatal("peer-initiated rekey did not change local SA role")
+	}
+	if len(s.fragmentBuf.frags) != 0 || len(s.fragmentBuf.replies) != 0 {
+		t.Fatal("old IKE generation fragment state survived peer rekey")
 	}
 	select {
 	case response := <-pipe.sent:
@@ -40,6 +46,9 @@ func TestReceiveRoleSwitchesOnPeerInitiatedIKERekey(t *testing.T) {
 func TestReceiveRoleReturnsToInitiatorOnLocalIKERekey(t *testing.T) {
 	s := newLebaraRekeyCryptoSession(t)
 	s.localResponder = true
+	if _, _, err := s.decryptAndParse(independentSKF(t, s, []byte{0}, ikev2.N, 1, 2, ikev2.INFORMATIONAL, 3, false)); err != nil {
+		t.Fatal(err)
+	}
 	prop := s.ikeRekeyProposal([]byte{1, 2, 3, 4, 5, 6, 7, 8})
 	response := encodeRekeyResponse(t, s,
 		&ikev2.EncryptedPayloadSA{Proposals: []*ikev2.Proposal{prop}},
@@ -51,6 +60,9 @@ func TestReceiveRoleReturnsToInitiatorOnLocalIKERekey(t *testing.T) {
 	}
 	if s.localResponder {
 		t.Fatal("locally initiated rekey retained responder SA role")
+	}
+	if len(s.fragmentBuf.frags) != 0 || len(s.fragmentBuf.replies) != 0 {
+		t.Fatal("old IKE generation fragment state survived local rekey")
 	}
 	valid := encodePeerPacket(t, s, nil, ikev2.INFORMATIONAL, 0, true)
 	if _, _, err := s.decryptAndParse(valid); err != nil {

@@ -976,10 +976,17 @@ func (s *Session) buildIKEAuthFinalPayloads() ([]ikev2.Payload, error) {
 }
 
 func (s *Session) handleIKEAuthFinalResp(data []byte) error {
-	_, payloads, err := s.decryptAndParse(data)
+	message, err := s.decodeProtectedIKE(data)
 	if err != nil {
-		return fmt.Errorf("解析 IKE_AUTH 最终响应失败: %v", err)
+		return fmt.Errorf("解析 IKE_AUTH 最终响应失败: %w", err)
 	}
+	if message == nil {
+		return errFragmentIncomplete
+	}
+	return s.handleIKEAuthFinalParsed(message.payloads)
+}
+
+func (s *Session) handleIKEAuthFinalParsed(payloads []ikev2.Payload) error {
 	s.logIKEAuthMetadata(ikeAuthPhaseFinal, payloads)
 
 	if s.resumeAuthPending {

@@ -189,10 +189,28 @@ func ikeAuthErrorNotify(payloads []ikev2.Payload) *RejectError {
 }
 
 func (s *Session) completePostEAP(respData []byte, sendFinal func([]ikev2.Payload) ([]byte, error)) error {
-	_, payloads, err := s.decryptAndParse(respData)
+	message, err := s.decodeProtectedIKE(respData)
 	if err != nil {
-		return fmt.Errorf("解析 IKE_AUTH EAP 完成消息失败: %v", err)
+		return err
 	}
+	if message == nil {
+		return errFragmentIncomplete
+	}
+	return s.completePostEAPMessage(message, func(payloads []ikev2.Payload) (*protectedIKEMessage, error) {
+		raw, err := sendFinal(payloads)
+		if err != nil {
+			return nil, err
+		}
+		final, err := s.decodeProtectedIKE(raw)
+		if err == nil && final == nil {
+			err = errFragmentIncomplete
+		}
+		return final, err
+	})
+}
+
+func (s *Session) completePostEAPMessage(message *protectedIKEMessage, sendFinal func([]ikev2.Payload) (*protectedIKEMessage, error)) error {
+	payloads := message.payloads
 	s.logIKEAuthMetadata(ikeAuthPhaseEAPLoop, payloads)
 	if rej := ikeAuthErrorNotify(payloads); rej != nil {
 		return rej
@@ -211,10 +229,11 @@ func (s *Session) completePostEAP(respData []byte, sendFinal func([]ikev2.Payloa
 	if err != nil {
 		return fmt.Errorf("failed to send final AUTH: %w", err)
 	}
-	return s.handleIKEAuthFinalResp(final)
+	return s.handleIKEAuthFinalParsed(final.payloads)
 }
 
 func (s *Session) resetIKEAuthTranscripts() {
+	s.fragmentBuf.clear()
 	s.initialChildRequest = nil
 	s.localIDiBody = nil
 	s.saInitResp = nil

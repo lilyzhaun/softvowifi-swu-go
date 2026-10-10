@@ -116,8 +116,8 @@ type Session struct {
 
 	ikeMu           sync.Mutex
 	ikeStarted      bool
-	ikeWaiters      map[ikeWaitKey]chan []byte
-	ikePending      map[ikeWaitKey][]byte
+	ikeWaiters      map[ikeWaitKey]chan *protectedIKEMessage
+	ikePending      map[ikeWaitKey]*protectedIKEMessage
 	ikeControlAlive bool
 
 	// 临时状态
@@ -211,8 +211,8 @@ func NewSession(cfg *Config, l *zap.Logger) *Session {
 		net:              netTools,
 		SPIi:             spii,
 		ChildSAsIn:       make(map[uint32]*ipsec.SecurityAssociation),
-		ikeWaiters:       make(map[ikeWaitKey]chan []byte),
-		ikePending:       make(map[ikeWaitKey][]byte),
+		ikeWaiters:       make(map[ikeWaitKey]chan *protectedIKEMessage),
+		ikePending:       make(map[ikeWaitKey]*protectedIKEMessage),
 		childOutPolicies: make([]childOutPolicy, 0),
 		done:             make(chan struct{}),
 		reauthTrigger:    make(chan struct{}, 1),
@@ -297,6 +297,7 @@ func (s *Session) connectOnce() (result error) {
 	// 在 Socket 启动前暂不配置 sendFunc，等到下面 socket.Start() 之后重载
 	s.taskMgr = NewTaskManager(s.ctx, nil, 5, nil)
 	s.taskMgr.responseValidator = s.validateWindowResponse
+	s.taskMgr.responseCleanup = func(msg *OutgoingMessage) { s.fragmentBuf.discardResponse(msg.Exchange, msg.MsgID) }
 
 	// 1. 设置网络 (Socket)
 	localPort := s.cfg.LocalPort
@@ -449,11 +450,7 @@ func (s *Session) connectOnce() (result error) {
 
 		// EAP 本地循环
 		for {
-			msgID, payloads, err := s.decryptAndParse(respData)
-			if err != nil {
-				return err
-			}
-			_ = msgID // 检查 ID 是否匹配 SequenceNumber？
+			payloads := respData.payloads
 			s.logIKEAuthMetadata(ikeAuthPhaseEAPLoop, payloads)
 
 			respEAP, eapDone, err := s.processIKEAuthEAPRound(payloads)
@@ -523,7 +520,7 @@ func (s *Session) connectOnce() (result error) {
 			break
 		}
 
-		if err := s.completePostEAP(respData, func(payloads []ikev2.Payload) ([]byte, error) {
+		if err := s.completePostEAPMessage(respData, func(payloads []ikev2.Payload) (*protectedIKEMessage, error) {
 			return s.sendEncryptedWithRetry(payloads, ikev2.IKE_AUTH)
 		}); err != nil {
 			return err
@@ -1016,6 +1013,7 @@ func (s *Session) Shutdown() {
 	if s.cancel != nil {
 		s.cancel()
 	}
+	s.fragmentBuf.clear()
 	s.observeClosed(SessionDownLocalCancel)
 }
 
@@ -1719,15 +1717,15 @@ func (s *Session) startDataPlaneLoop() {
 	}()
 }
 
-func (s *Session) receiveIKEWithTimeout(timeout time.Duration) ([]byte, error) {
+func (s *Session) receiveIKEWithTimeout(timeout time.Duration) (*protectedIKEMessage, error) {
 	return s.receiveIKEResponseWithTimeout(ikev2.IKE_SA_INIT, 0, timeout)
 }
 
-func (s *Session) receiveIKEResponseWithTimeout(exchangeType ikev2.ExchangeType, msgID uint32, timeout time.Duration) ([]byte, error) {
+func (s *Session) receiveIKEResponseWithTimeout(exchangeType ikev2.ExchangeType, msgID uint32, timeout time.Duration) (*protectedIKEMessage, error) {
 	s.ensureIKEDispatcher()
 
 	key := ikeWaitKey{exchangeType: exchangeType, msgID: msgID}
-	ch := make(chan []byte, 1)
+	ch := make(chan *protectedIKEMessage, 1)
 
 	s.ikeMu.Lock()
 	if pending, ok := s.ikePending[key]; ok {
@@ -1744,6 +1742,7 @@ func (s *Session) receiveIKEResponseWithTimeout(exchangeType ikev2.ExchangeType,
 			delete(s.ikeWaiters, key)
 		}
 		s.ikeMu.Unlock()
+		s.fragmentBuf.discardResponse(exchangeType, msgID)
 	}()
 
 	timer := time.NewTimer(timeout)
@@ -1759,7 +1758,7 @@ func (s *Session) receiveIKEResponseWithTimeout(exchangeType ikev2.ExchangeType,
 	}
 }
 
-func (s *Session) sendEncryptedWithRetry(payloads []ikev2.Payload, exchangeType ikev2.ExchangeType) ([]byte, error) {
+func (s *Session) sendEncryptedWithRetry(payloads []ikev2.Payload, exchangeType ikev2.ExchangeType) (*protectedIKEMessage, error) {
 	if s.taskMgr == nil {
 		return nil, errors.New("任务调度器未初始化")
 	}
@@ -1805,16 +1804,25 @@ func (s *Session) sendEncryptedWithRetry(payloads []ikev2.Payload, exchangeType 
 
 	s.logSentEAP(payloads)
 	// 统一异步推送进滑动窗口队列（无论被切分成了多少包，TaskManager 的 Retry 会连带全部发射）
-	compCh := s.taskMgr.EnqueueRequest(msgID, exchangeType, payloads, packets)
+	request := s.taskMgr.enqueueRequest(msgID, exchangeType, payloads, packets)
 
-	// 这里仍然需要向外层提供同步的 `[]byte` 返回语义，但是不会在重试循环里死耗
+	// Completion publishes the already authenticated payloads; do not decrypt
+	// the last SKF datagram a second time in the synchronous consumer.
 	select {
 	case <-s.ctx.Done():
 		return nil, s.ctx.Err()
-	case resp, ok := <-compCh:
+	case resp, ok := <-request.CompletionCh:
 		if !ok || resp == nil {
 			return nil, ErrWindowTimeout
 		}
-		return resp, nil
+		if request.response != nil {
+			return request.response, nil
+		}
+		// Standalone TaskManager users can omit the Session validator.
+		message, err := s.decodeProtectedIKE(resp)
+		if err == nil && message == nil {
+			err = errFragmentIncomplete
+		}
+		return message, err
 	}
 }
