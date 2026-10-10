@@ -30,3 +30,5 @@
 主仓真实pin/正常构建后首个小米13原配置短验被`invalid initial Child SA transaction`拒绝，已stop/清理，不能由受保护完整载荷已解析判哪一规则失败。
 在基准`3648adc`的`fix/a02-reject-reasons`只为原拒绝加固定不变量名称（原请求/编号/变换/CP类型与长度/TS绑定等），保持相同`errors.Is`和全部接受/拒绝条件，不加入运营商/安全降级。
 错误文本不带身份、IP地址、配置值、密钥或payload。四种合成拒绝的分支准确性/无私密值先RED后GREEN；真实根因仍待后继标准候选的新证据，不能用这个文档预报结果。
+
+后继标准候选实际确认拒绝在TSi与CP分配地址绑定，尚未知道是响应族未分配还是具体host范围不符。再仅细分静态`IPv4/IPv6 without allocation`与`outside allocation`，不带地址值/数量或更改任何条件；独立合成细分类先RED后GREEN。不得据通用分支名猜放宽任何规则或宣称卡已恢复。

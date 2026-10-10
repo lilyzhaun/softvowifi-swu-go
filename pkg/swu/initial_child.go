@@ -171,8 +171,10 @@ func (s *Session) selectInitialChild(payloads []ikev2.Payload) (initialChildSele
 	// transaction. Do not accept selectors for a foreign internal host/family.
 	for _, ts := range selectedI.TrafficSelectors {
 		addresses := selection.cp.IPv4Addresses
+		family := "IPv4"
 		if ts.TSType == ikev2.TS_IPV6_ADDR_RANGE {
 			addresses = selection.cp.IPv6Addresses
+			family = "IPv6"
 		}
 		bound := false
 		for _, address := range addresses {
@@ -182,7 +184,11 @@ func (s *Session) selectInitialChild(payloads []ikev2.Payload) (initialChildSele
 			}
 		}
 		if !bound {
-			return empty, initialChildFailure("TSi assigned address")
+			reason := family + " outside allocation"
+			if len(addresses) == 0 {
+				reason = family + " without allocation"
+			}
+			return empty, initialChildFailure("TSi assigned address (" + reason + ")")
 		}
 	}
 	selection.tsi, selection.tsr = selectedI.TrafficSelectors, selectedR.TrafficSelectors

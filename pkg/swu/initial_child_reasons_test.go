@@ -40,3 +40,25 @@ func TestInitialChildRejectionNamesFailedInvariantWithoutValues(t *testing.T) {
 		})
 	}
 }
+
+func TestInitialChildSourceRejectionNamesAllocationFamily(t *testing.T) {
+	for _, allocated := range []bool{true, false} {
+		s, _ := newPostEAPSession(t)
+		payloads := childTransactionPayloads(t, s)
+		want := "IPv4 outside allocation"
+		if allocated {
+			ts := payloads[4].(*ikev2.EncryptedPayloadTS).TrafficSelectors[0]
+			ts.StartAddr = []byte{192, 0, 2, 11}
+			ts.EndAddr = []byte{192, 0, 2, 11}
+		} else {
+			// IPv6 selector in the original dual-stack offer; this response only
+			// assigned IPv4. Observe the distinct existing rejection, not relax it.
+			want = "IPv6 without allocation"
+			payloads[4].(*ikev2.EncryptedPayloadTS).TrafficSelectors = []*ikev2.TrafficSelector{{TSType: ikev2.TS_IPV6_ADDR_RANGE, StartAddr: make([]byte, 16), EndAddr: []byte{255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255}, EndPort: 65535}}
+		}
+		err := s.handleIKEAuthFinalResp(encodePeerPacket(t, s, payloads, ikev2.IKE_AUTH, 3, true))
+		if !errors.Is(err, errInitialChild) || !strings.Contains(err.Error(), want) {
+			t.Fatalf("missing non-private source-family rejection: %v", err)
+		}
+	}
+}
