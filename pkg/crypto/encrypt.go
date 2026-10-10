@@ -90,7 +90,8 @@ func (e *aesGCM) Encrypt(plaintext []byte, key []byte, iv []byte, aad []byte) ([
 		return nil, err
 	}
 
-	nonce := append(salt, iv...) // 4 字节盐 + 8 字节 IV = 12 字节
+	// KEYMAT slices may share backing storage with the next directional key.
+	nonce := append(salt[:len(salt):len(salt)], iv...) // 4 字节盐 + 8 字节 IV = 12 字节
 
 	return gcm.Seal(nil, nonce, plaintext, aad), nil
 }
@@ -112,7 +113,7 @@ func (e *aesGCM) Decrypt(ciphertext []byte, key []byte, iv []byte, aad []byte) (
 		return nil, err
 	}
 
-	nonce := append(salt, iv...)
+	nonce := append(salt[:len(salt):len(salt)], iv...)
 	return gcm.Open(nil, nonce, ciphertext, aad)
 }
 
