@@ -75,6 +75,13 @@ func rekeyXFRMFixture() (*Session, childSARekey) {
 	sess.xfrmLocalPort, sess.xfrmRemotePort = 4501, 4500
 	sess.xfrmIfID, sess.childESN = 37, true
 	sess.childIntegID = uint16(ikev2.AUTH_HMAC_SHA2_256_128)
+	// Existing matrix: an established dual-stack Child SA. Make its negotiated
+	// family precondition explicit, keeping the original failure/rollback checks.
+	sess.cpConfig = &ikev2.CPConfig{IPv4Addresses: []net.IP{net.IPv4(192, 0, 2, 10)}, IPv6Addresses: []net.IP{net.ParseIP("2001:db8::10")}}
+	v4 := ikev2.NewTrafficSelectorIPV4(net.IPv4zero, net.IPv4(255, 255, 255, 255), 0, 65535)
+	v6 := ikev2.NewTrafficSelectorIPV6(net.IPv6zero, net.ParseIP("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"), 0, 65535)
+	sess.tsi = []*ikev2.TrafficSelector{v4, v6}
+	sess.tsr = []*ikev2.TrafficSelector{v4, v6}
 	return sess, childSARekey{
 		out:    &ipsec.SecurityAssociation{SPI: 201, EncryptionKey: []byte{1}, IntegrityKey: []byte{3}},
 		in:     &ipsec.SecurityAssociation{SPI: 202, EncryptionKey: []byte{2}, IntegrityKey: []byte{4}},

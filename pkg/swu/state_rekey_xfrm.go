@@ -69,10 +69,12 @@ func (s *Session) rekeyXFRM(ops childRekeyXFRMOps, next childSARekey, old [2]uin
 			out.AuthTruncLen, in.AuthTruncLen = auth.TruncateBits, auth.TruncateBits
 		}
 	}
-	allIPv4 := &net.IPNet{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)}
-	allIPv6 := &net.IPNet{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)}
+	networks := s.childPolicyNetworks()
+	if len(networks) == 0 {
+		return initialChildFailure("no active policy family")
+	}
 	policies := make([]driver.XFRMSPConfig, 0, 4)
-	for _, src := range []*net.IPNet{allIPv4, allIPv6} {
+	for _, src := range networks {
 		policies = append(policies, driver.XFRMSPConfig{
 			Src: src, Dst: src, Dir: netlink.XFRM_DIR_OUT,
 			Priority: driver.OuterBroadPolicyPriority,
@@ -81,7 +83,7 @@ func (s *Session) rekeyXFRM(ops childRekeyXFRMOps, next childSARekey, old [2]uin
 			TmplSPI: int(next.out.SPI), Ifid: s.xfrmIfID,
 		})
 	}
-	for _, src := range []*net.IPNet{allIPv4, allIPv6} {
+	for _, src := range networks {
 		policies = append(policies, driver.XFRMSPConfig{
 			Src: src, Dst: src, Dir: netlink.XFRM_DIR_IN,
 			Priority: driver.OuterBroadPolicyPriority,

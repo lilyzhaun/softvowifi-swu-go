@@ -1284,90 +1284,20 @@ func (s *Session) setupXFRMDataPlane() error {
 	s.xfrmRemotePort = remotePort
 	s.xfrmIfID = int(xfrmIfID)
 
-	// 6. 安装 SP (出站和入站)
-	allIPv4 := &net.IPNet{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)}
-	allIPv6 := &net.IPNet{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)}
-
-	// 出站 SP (IPv4)
-	outSP4 := driver.XFRMSPConfig{
-		Src:       allIPv4,
-		Dst:       allIPv4,
-		Dir:       netlink.XFRM_DIR_OUT,
-		Priority:  driver.OuterBroadPolicyPriority,
-		TmplSrc:   localIP,
-		TmplDst:   remoteIP,
-		TmplProto: netlink.XFRM_PROTO_ESP,
-		TmplMode:  netlink.XFRM_MODE_TUNNEL,
-		TmplSPI:   int(outSACfg.SPI), // 显式绑定 SPI
-		Ifid:      int(xfrmIfID),
+	// 6. Only allocated, bidirectionally selected families may become policies.
+	// Keep the existing broad-policy form; do not invent a missing address family.
+	policies := s.initialChildXFRMPolicies()
+	for _, policy := range policies {
+		if err := xfrmMgr.AddSP(policy); err != nil {
+			if policy.Dir == netlink.XFRM_DIR_FWD {
+				s.Logger.Warn("添加 FWD SP 失败 (非致命)", logger.Err(err))
+				continue
+			}
+			return err
+		}
+		s.xfrmPolicies = append(s.xfrmPolicies, policy)
 	}
-	if err := xfrmMgr.AddSP(outSP4); err != nil {
-		return err
-	}
-
-	// 入站 SP (IPv4)
-	inSP4 := driver.XFRMSPConfig{
-		Src:       allIPv4,
-		Dst:       allIPv4,
-		Dir:       netlink.XFRM_DIR_IN,
-		Priority:  driver.OuterBroadPolicyPriority,
-		TmplSrc:   remoteIP,
-		TmplDst:   localIP,
-		TmplProto: netlink.XFRM_PROTO_ESP,
-		TmplMode:  netlink.XFRM_MODE_TUNNEL,
-		TmplSPI:   int(inSACfg.SPI), // 显式验证 SPI
-		Ifid:      int(xfrmIfID),
-	}
-	if err := xfrmMgr.AddSP(inSP4); err != nil {
-		return err
-	}
-
-	// 转发 SP (IPv4)
-	fwdSP4 := driver.XFRMSPConfig{
-		Src:       allIPv4,
-		Dst:       allIPv4,
-		Dir:       netlink.XFRM_DIR_FWD,
-		Priority:  driver.OuterBroadPolicyPriority,
-		TmplSrc:   remoteIP,
-		TmplDst:   localIP,
-		TmplProto: netlink.XFRM_PROTO_ESP,
-		TmplMode:  netlink.XFRM_MODE_TUNNEL,
-		Ifid:      int(xfrmIfID),
-	}
-	if err := xfrmMgr.AddSP(fwdSP4); err != nil {
-		s.Logger.Warn("添加 FWD SP 失败 (非致命)", logger.Err(err))
-	}
-
-	// IPv6 SP (强制安装，覆盖所有 IPv6 流量，即使没有 CP 配置也要允许链路本地流量)
-	outSP6 := driver.XFRMSPConfig{
-		Src: allIPv6, Dst: allIPv6, Dir: netlink.XFRM_DIR_OUT,
-		Priority: driver.OuterBroadPolicyPriority,
-		TmplSrc:  localIP, TmplDst: remoteIP,
-		TmplProto: netlink.XFRM_PROTO_ESP, TmplMode: netlink.XFRM_MODE_TUNNEL,
-		TmplSPI: int(outSACfg.SPI), // 显式绑定 SPI
-		Ifid:    int(xfrmIfID),
-	}
-	// Panic removed
-	if err := xfrmMgr.AddSP(outSP6); err != nil {
-		s.Logger.Warn("添加 IPv6 出站 SP 失败 (非致命)", logger.Err(err))
-	}
-
-	inSP6 := driver.XFRMSPConfig{
-		Src: allIPv6, Dst: allIPv6, Dir: netlink.XFRM_DIR_IN,
-		Priority: driver.OuterBroadPolicyPriority,
-		TmplSrc:  remoteIP, TmplDst: localIP,
-		TmplProto: netlink.XFRM_PROTO_ESP, TmplMode: netlink.XFRM_MODE_TUNNEL,
-		TmplSPI: int(inSACfg.SPI), // 显式验证 SPI
-		Ifid:    int(xfrmIfID),
-	}
-	if err := xfrmMgr.AddSP(inSP6); err != nil {
-		s.Logger.Warn("添加 IPv6 入站 SP 失败 (非致命)", logger.Err(err))
-	}
-
 	s.Logger.Debug("XFRM SP 已安装")
-
-	// 缓存所有 SP 配置（MOBIKE 地址更新时使用）
-	s.xfrmPolicies = []driver.XFRMSPConfig{outSP4, inSP4, fwdSP4, outSP6, inSP6}
 
 	// 7. 在 XFRM 接口上配置 IP 地址和路由
 	// 复用 applyNetworkConfigOnTUN (它只依赖接口名)
@@ -1437,7 +1367,7 @@ func (s *Session) applyNetworkConfigOnTUN(iface string) error {
 	deleter, _ := s.net.(netToolsDeleter)
 
 	if s.cpConfig != nil {
-		if len(s.cpConfig.IPv4Addresses) > 0 {
+		if s.childPolicyFamilyActive(ikev2.TS_IPV4_ADDR_RANGE) {
 			ip := s.cpConfig.IPv4Addresses[0].To4()
 			if ip != nil {
 				cidr := fmt.Sprintf("%s/32", ip.String())
@@ -1447,7 +1377,7 @@ func (s *Session) applyNetworkConfigOnTUN(iface string) error {
 				// 优化: 删除接口时 IP 地址会自动被内核回收，不再记录 O(N) 的 DelAddress
 			}
 		}
-		if len(s.cpConfig.IPv6Addresses) > 0 {
+		if s.childPolicyFamilyActive(ikev2.TS_IPV6_ADDR_RANGE) {
 			ip := s.cpConfig.IPv6Addresses[0].To16()
 			if ip != nil {
 				cidr := fmt.Sprintf("%s/128", ip.String())
@@ -1463,11 +1393,17 @@ func (s *Session) applyNetworkConfigOnTUN(iface string) error {
 	var routes6 []string
 	if s.cpConfig != nil {
 		for _, ip := range s.cpConfig.IPv4PCSCF {
+			if !s.childPolicyFamilyActive(ikev2.TS_IPV4_ADDR_RANGE) {
+				continue
+			}
 			if v4 := ip.To4(); v4 != nil {
 				routes = append(routes, fmt.Sprintf("%s/32", v4.String()))
 			}
 		}
 		for _, ip := range s.cpConfig.IPv6PCSCF {
+			if !s.childPolicyFamilyActive(ikev2.TS_IPV6_ADDR_RANGE) {
+				continue
+			}
 			if v6 := ip.To16(); v6 != nil {
 				routes6 = append(routes6, fmt.Sprintf("%s/128", v6.String()))
 			}
@@ -1491,6 +1427,9 @@ func (s *Session) applyNetworkConfigOnTUN(iface string) error {
 	_, enablePolicyRouting := s.net.(policyRouter)
 
 	for _, ts := range s.tsr {
+		if !s.childPolicyFamilyActive(ts.TSType) {
+			continue
+		}
 		if ts.TSType != ikev2.TS_IPV4_ADDR_RANGE && ts.TSType != ikev2.TS_IPV6_ADDR_RANGE {
 			continue
 		}

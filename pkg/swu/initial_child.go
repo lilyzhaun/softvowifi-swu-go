@@ -167,14 +167,21 @@ func (s *Session) selectInitialChild(payloads []ikev2.Payload) (initialChildSele
 	if err := validateInitialTS(selectedR, offeredR); err != nil {
 		return empty, err
 	}
-	// An assigned address and its source selector must belong to the same
-	// transaction. Do not accept selectors for a foreign internal host/family.
+	// RFC7296 3.15.4 permits a partial allocation of a dual-stack request.
+	// All wire selectors were validated above; inactive families never become
+	// runtime selectors, routes or policies. Assigned families still require
+	// an address bound to TSi and a compatible TSr in the same transaction.
+	var inactiveReason string
 	for _, ts := range selectedI.TrafficSelectors {
 		addresses := selection.cp.IPv4Addresses
 		family := "IPv4"
 		if ts.TSType == ikev2.TS_IPV6_ADDR_RANGE {
 			addresses = selection.cp.IPv6Addresses
 			family = "IPv6"
+		}
+		if len(addresses) == 0 {
+			inactiveReason = family + " without allocation"
+			continue
 		}
 		bound := false
 		for _, address := range addresses {
@@ -184,15 +191,55 @@ func (s *Session) selectInitialChild(payloads []ikev2.Payload) (initialChildSele
 			}
 		}
 		if !bound {
-			reason := family + " outside allocation"
-			if len(addresses) == 0 {
-				reason = family + " without allocation"
+			return empty, initialChildFailure("TSi assigned address (" + family + " outside allocation)")
+		}
+		paired := false
+		for _, remote := range selectedR.TrafficSelectors {
+			if selectorsShareFamilyProtocol(ts, remote) {
+				paired = true
+				break
 			}
-			return empty, initialChildFailure("TSi assigned address (" + reason + ")")
+		}
+		if !paired {
+			return empty, initialChildFailure("TSi/TSr family/protocol intersection")
+		}
+		selection.tsi = append(selection.tsi, ts)
+	}
+	if len(selection.tsi) == 0 {
+		return empty, initialChildFailure("TSi assigned address (" + inactiveReason + ")")
+	}
+	for _, remote := range selectedR.TrafficSelectors {
+		for _, local := range selection.tsi {
+			if selectorsShareFamilyProtocol(local, remote) {
+				selection.tsr = append(selection.tsr, remote)
+				break
+			}
 		}
 	}
-	selection.tsi, selection.tsr = selectedI.TrafficSelectors, selectedR.TrafficSelectors
+	var v4, v6 bool
+	for _, ts := range selection.tsi {
+		if ts.TSType == ikev2.TS_IPV4_ADDR_RANGE {
+			v4 = true
+		} else {
+			v6 = true
+		}
+	}
+	if !v4 {
+		selection.cp.IPv4Addresses = nil
+		selection.cp.IPv4DNS = nil
+		selection.cp.IPv4PCSCF = nil
+	}
+	if !v6 {
+		selection.cp.IPv6Addresses = nil
+		selection.cp.IPv6DNS = nil
+		selection.cp.IPv6PCSCF = nil
+		selection.cp.IPv6Prefix = 0
+	}
 	return selection, nil
+}
+
+func selectorsShareFamilyProtocol(a, b *ikev2.TrafficSelector) bool {
+	return a.TSType == b.TSType && (a.IPProtocol == 0 || b.IPProtocol == 0 || a.IPProtocol == b.IPProtocol)
 }
 
 func validateInitialCP(reply, request *ikev2.EncryptedPayloadCP) error {
