@@ -54,6 +54,12 @@
 
 基准`8a5eaec`，分支`fix/a01-gcm-key-alias`。独立标准库AES-GCM-16证明生产KEYMAT共享底层数组时，原nonce拼接在encrypt/decrypt/坏tag三个叶断言均写入相邻密钥；仅在两处append前将salt容量限定为长度，强制nonce独立存储。标准密文、合法解密、坏tag拒绝及整块KEYMAT不变直接回归，原接收边界保持。来源仅Go标准库/RFC5282，无外部代码复制、新算法或报价，许可/module/unknown归属不变；主仓须消费后继真实pin并重新构建，不能部署前序产物冒充补齐。
 
+## 2026-10-11：初始Child/CP/TS验证后事务提交
+
+负责人`lilyzhaun`，基准`97d4d31`，分支`fix/a02-child-selection-commit`。按RFC7296 §2.9/2.19/3.3/3.13/3.15，以本次AUTH1独立原报价快照严格匹配单完整ESP选择/CP_REPLY/TS子集，AUTH验证不再提前保存IDr，所有检查/派生后才提交Child/CP/TS/通知与ticket回调；回调参数不别名内部密钥。原六报价、CP/TS、身份、运营商参数不变；完整规则与RED/合法独立peer/剩余边界见[初始事务](docs/initial-child-transaction.md)。
+
+同边界SA/proposal/transform及TS尾随/终止结构不再被忽略，CP高reserved位按标准保持TLV，不误当TV。旧合成peer仅改合法原proposal3/NO_ESN及补原已请求CP/TS，原认证/身份密码断言不删；新畸形包直接从独立完整合法基线突变。没有外部代码复制、新算法/降级或上游归属填补，原MIT/module/unknown来源保持；维护测试与后继真实pin/Android构建/实机分层。
+
 ## 历史：本地维护跨度（2026-09-15 首导前源码就绪核对）
 
 首次本地导入已经包含 A/B；之后的维护远不止两个修改。以下为可追溯的本地历史分组与测试入口，不是相对纯上游的完整 diff 或逐行法律审查，未找到的首次导入前来源继续 unknown。

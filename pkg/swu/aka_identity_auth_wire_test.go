@@ -92,7 +92,11 @@ func Test_AKAIdentity_initiatorAUTHUsesOriginalIDi_whenInnerPermanent(t *testing
 		t.Fatal(err)
 	}
 	peer.send(t, peer.protect(t, []akaWirePayload{
-		{kind: 39, body: append([]byte{2, 0, 0, 0}, responderAUTH...)}, {kind: 33, body: childBody},
+		{kind: 39, body: append([]byte{2, 0, 0, 0}, responderAUTH...)},
+		{kind: 47, body: []byte{2, 0, 0, 0, 0, 1, 0, 4, 192, 0, 2, 10}},
+		{kind: 33, body: childBody},
+		{kind: 44, body: []byte{1, 0, 0, 0, 7, 0, 0, 16, 0, 0, 255, 255, 192, 0, 2, 10, 192, 0, 2, 10}},
+		{kind: 45, body: []byte{1, 0, 0, 0, 7, 0, 0, 16, 0, 0, 255, 255, 0, 0, 0, 0, 255, 255, 255, 255}},
 	}))
 	select {
 	case <-established:

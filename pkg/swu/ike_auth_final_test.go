@@ -120,9 +120,10 @@ func eapSuccessPayload() *ikev2.EncryptedPayloadEAP {
 
 func testChildSA() *ikev2.EncryptedPayloadSA {
 	spi := []byte{0x22, 0x22, 0x22, 0x22}
-	prop := ikev2.NewProposal(1, ikev2.ProtoESP, spi)
+	prop := ikev2.NewProposal(3, ikev2.ProtoESP, spi)
 	prop.AddTransform(ikev2.TransformTypeEncr, ikev2.ENCR_AES_CBC, 256)
 	prop.AddTransform(ikev2.TransformTypeInteg, ikev2.AUTH_HMAC_SHA2_256_128, 0)
+	prop.AddTransform(ikev2.TransformTypeESN, 0, 0)
 	return &ikev2.EncryptedPayloadSA{Proposals: []*ikev2.Proposal{prop}}
 }
 
@@ -139,6 +140,22 @@ func mutationNotifies() []ikev2.Payload {
 
 func wrapAuth(t *testing.T, sess *Session, payloads []ikev2.Payload) []byte {
 	t.Helper()
+	// Existing final-AUTH tests focus on AUTH/notify behavior. Complete their
+	// peer with the originally requested CP/TS when it also selects a Child SA.
+	// A02 malformed/missing-CP/TS tests use the independent peer directly.
+	if ikeAuthHasChildSA(payloads) {
+		complete := childTransactionPayloads(t, sess)
+		expanded := make([]ikev2.Payload, 0, len(payloads)+3)
+		inserted := false
+		for _, payload := range payloads {
+			if _, ok := payload.(*ikev2.EncryptedPayloadSA); ok && !inserted {
+				expanded = append(expanded, complete[2])
+				inserted = true
+			}
+			expanded = append(expanded, payload)
+		}
+		payloads = append(expanded, complete[4], complete[5])
+	}
 	return encodePeerPacket(t, sess, payloads, ikev2.IKE_AUTH, sess.NextSequenceNumber(), true)
 }
 
