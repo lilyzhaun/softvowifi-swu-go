@@ -218,7 +218,7 @@ func (fb *fragmentBuffer) discardResponse(exchange ikev2.ExchangeType, mid uint3
 // fragmentMessage 将 IKE 消息分片发送 (RFC 7383)
 // plainInner: 加密前的内部载荷数据 (已序列化的载荷链)
 // 返回多个 SKF 数据包
-func (s *Session) fragmentMessage(payloads []ikev2.Payload, exchangeType ikev2.ExchangeType) ([][]byte, error) {
+func (s *Session) fragmentMessage(payloads []ikev2.Payload, exchangeType ikev2.ExchangeType, msgID uint32) ([][]byte, error) {
 	// 序列化所有载荷
 	innerData := []byte{}
 	for i, pl := range payloads {
@@ -271,8 +271,7 @@ func (s *Session) fragmentMessage(payloads []ikev2.Payload, exchangeType ikev2.E
 		return nil, nil
 	}
 
-	// 所有分片共享同一个 Message ID
-	msgID := uint32(s.NextSequenceNumber())
+	// Every fragment uses the request's one already allocated Message ID.
 
 	// 第一个分片的 NextPayload = 第一个载荷的类型（告诉接收方重组后的第一个载荷类型）
 	firstPayloadType := ikev2.NoNextPayload

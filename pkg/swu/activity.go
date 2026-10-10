@@ -22,3 +22,34 @@ func (s *Session) inboundIdle(at time.Time) time.Duration {
 	s.inboundActivityMu.RUnlock()
 	return at.Sub(last)
 }
+
+func (s *Session) initializeOutboundActivity(at time.Time) {
+	s.outboundActivityMu.Lock()
+	defer s.outboundActivityMu.Unlock()
+	if s.lastOutboundTime.IsZero() {
+		s.lastOutboundTime = at
+	}
+}
+
+func (s *Session) recordOutboundActivity(at time.Time) {
+	s.outboundActivityMu.Lock()
+	defer s.outboundActivityMu.Unlock()
+	if at.After(s.lastOutboundTime) {
+		s.lastOutboundTime = at
+	}
+}
+
+func (s *Session) outboundActivityTime() time.Time {
+	s.outboundActivityMu.RLock()
+	defer s.outboundActivityMu.RUnlock()
+	return s.lastOutboundTime
+}
+
+func (s *Session) recordEncryptedRequest(packet []byte, mid uint32, at time.Time) {
+	s.outboundActivityMu.Lock()
+	defer s.outboundActivityMu.Unlock()
+	s.lastEncryptedMsg, s.lastEncryptedMsgID = packet, mid
+	if at.After(s.lastOutboundTime) {
+		s.lastOutboundTime = at
+	}
+}
