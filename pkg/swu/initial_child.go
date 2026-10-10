@@ -4,12 +4,19 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 
 	"github.com/1239t/swu-go/pkg/ikev2"
 )
 
 var errInitialChild = errors.New("invalid initial Child SA transaction")
+
+// Static invariant names only: never include addresses, identities, payloads
+// or key material in rejection diagnostics.
+func initialChildFailure(reason string) error {
+	return fmt.Errorf("initial Child %s: %w", reason, errInitialChild)
+}
 
 type initialChildSelection struct {
 	proposal    *ikev2.Proposal
@@ -33,7 +40,7 @@ func (s *Session) snapshotInitialChildRequest(cp *ikev2.EncryptedPayloadCP, sa *
 func (s *Session) selectInitialChild(payloads []ikev2.Payload) (initialChildSelection, error) {
 	var empty initialChildSelection
 	if len(s.initialChildRequest) == 0 || s.childSPI == 0 {
-		return empty, errInitialChild
+		return empty, initialChildFailure("request snapshot")
 	}
 	request, err := ikev2.DecodePacket(s.initialChildRequest)
 	if err != nil {
@@ -60,38 +67,38 @@ func (s *Session) selectInitialChild(payloads []ikev2.Payload) (initialChildSele
 		switch p := payload.(type) {
 		case *ikev2.EncryptedPayloadSA:
 			if selectedSA != nil {
-				return empty, errInitialChild
+				return empty, initialChildFailure("duplicate SA")
 			}
 			selectedSA = p
 		case *ikev2.EncryptedPayloadCP:
 			// RFC7296 2.19: CFG_REPLY precedes the matching SA payload.
 			if selectedCP != nil || selectedSA != nil {
-				return empty, errInitialChild
+				return empty, initialChildFailure("CP count/order")
 			}
 			selectedCP = p
 		case *ikev2.EncryptedPayloadTS:
 			if p.IsInitiator {
 				if selectedI != nil {
-					return empty, errInitialChild
+					return empty, initialChildFailure("duplicate TSi")
 				}
 				selectedI = p
 			} else {
 				if selectedR != nil {
-					return empty, errInitialChild
+					return empty, initialChildFailure("duplicate TSr")
 				}
 				selectedR = p
 			}
 		case *ikev2.EncryptedPayloadKE:
 			// The initial AUTH1 offers no additional DH transform or KE.
-			return empty, errInitialChild
+			return empty, initialChildFailure("unoffered KE")
 		}
 	}
 	if selectedSA == nil || len(selectedSA.Proposals) != 1 || offeredSA == nil || requestedCP == nil || selectedCP == nil || selectedI == nil || selectedR == nil {
-		return empty, errInitialChild
+		return empty, initialChildFailure("required SA/CP/TS")
 	}
 	p := selectedSA.Proposals[0]
 	if p.ProtocolID != ikev2.ProtoESP || len(p.SPI) != 4 || binary.BigEndian.Uint32(p.SPI) == 0 {
-		return empty, errInitialChild
+		return empty, initialChildFailure("protocol/SPI")
 	}
 	var offered *ikev2.Proposal
 	for _, candidate := range offeredSA.Proposals {
@@ -99,14 +106,17 @@ func (s *Session) selectInitialChild(payloads []ikev2.Payload) (initialChildSele
 			offered = candidate
 		}
 	}
-	if offered == nil || len(p.Transforms) != len(offered.Transforms) {
-		return empty, errInitialChild
+	if offered == nil {
+		return empty, initialChildFailure("proposal number")
+	}
+	if len(p.Transforms) != len(offered.Transforms) {
+		return empty, initialChildFailure("transform count")
 	}
 	selection := initialChildSelection{proposal: p}
 	seen := map[ikev2.TransformType]bool{}
 	for _, transform := range p.Transforms {
 		if seen[transform.Type] {
-			return empty, errInitialChild
+			return empty, initialChildFailure("duplicate transform")
 		}
 		seen[transform.Type] = true
 		matched := false
@@ -127,7 +137,7 @@ func (s *Session) selectInitialChild(payloads []ikev2.Payload) (initialChildSele
 			}
 		}
 		if !matched {
-			return empty, errInitialChild
+			return empty, initialChildFailure("transform/attribute not offered")
 		}
 		switch transform.Type {
 		case ikev2.TransformTypeEncr:
@@ -138,14 +148,14 @@ func (s *Session) selectInitialChild(payloads []ikev2.Payload) (initialChildSele
 		case ikev2.TransformTypeESN:
 			// All six original complete offers explicitly select NO_ESN.
 			if transform.ID != 0 {
-				return empty, errInitialChild
+				return empty, initialChildFailure("unoffered ESN")
 			}
 		default:
-			return empty, errInitialChild
+			return empty, initialChildFailure("unoffered transform type")
 		}
 	}
 	if !seen[ikev2.TransformTypeEncr] || !seen[ikev2.TransformTypeESN] {
-		return empty, errInitialChild
+		return empty, initialChildFailure("mandatory transform")
 	}
 	if err := validateInitialCP(selectedCP, requestedCP); err != nil {
 		return empty, err
@@ -172,7 +182,7 @@ func (s *Session) selectInitialChild(payloads []ikev2.Payload) (initialChildSele
 			}
 		}
 		if !bound {
-			return empty, errInitialChild
+			return empty, initialChildFailure("TSi assigned address")
 		}
 	}
 	selection.tsi, selection.tsr = selectedI.TrafficSelectors, selectedR.TrafficSelectors
@@ -181,7 +191,7 @@ func (s *Session) selectInitialChild(payloads []ikev2.Payload) (initialChildSele
 
 func validateInitialCP(reply, request *ikev2.EncryptedPayloadCP) error {
 	if reply.CFGType != ikev2.CFG_REPLY || request.CFGType != ikev2.CFG_REQUEST {
-		return errInitialChild
+		return initialChildFailure("CP type")
 	}
 	requested := map[uint16]int{}
 	for _, attr := range request.Attributes {
@@ -197,8 +207,11 @@ func validateInitialCP(reply, request *ikev2.EncryptedPayloadCP) error {
 			if attr.Type == ikev2.INTERNAL_IP6_ADDRESS {
 				expected = 17
 			}
-			if size != expected || counts[attr.Type] > requested[attr.Type] {
-				return errInitialChild
+			if size != expected {
+				return initialChildFailure("CP address length")
+			}
+			if counts[attr.Type] > requested[attr.Type] {
+				return initialChildFailure("CP address count")
 			}
 			ipBytes := expected
 			if expected == 17 {
@@ -206,38 +219,38 @@ func validateInitialCP(reply, request *ikev2.EncryptedPayloadCP) error {
 			}
 			ip := net.IP(attr.Value[:ipBytes])
 			if !ip.IsGlobalUnicast() || ip.IsLinkLocalUnicast() {
-				return errInitialChild
+				return initialChildFailure("CP address scope")
 			}
 			if expected == 17 && (ip.To4() != nil || attr.Value[16] > 128) {
-				return errInitialChild
+				return initialChildFailure("CP IPv6 prefix/family")
 			}
 		case ikev2.INTERNAL_IP4_DNS, ikev2.P_CSCF_IP4_ADDRESS, ikev2.INTERNAL_IP4_NBNS, ikev2.INTERNAL_IP4_DHCP:
 			if size != 0 && size != 4 {
-				return errInitialChild
+				return initialChildFailure("CP IPv4 server length")
 			}
 		case ikev2.INTERNAL_IP6_DNS, ikev2.P_CSCF_IP6_ADDRESS, ikev2.ASSIGNED_PCSCF_IP6_ADDRESS, ikev2.INTERNAL_IP6_DHCP:
 			if size != 0 && size != 16 {
-				return errInitialChild
+				return initialChildFailure("CP IPv6 server length")
 			}
 		case ikev2.INTERNAL_IP4_NETMASK:
 			if size != 4 || counts[attr.Type] > 1 {
-				return errInitialChild
+				return initialChildFailure("CP netmask shape")
 			}
 			_, bits := net.IPMask(attr.Value).Size()
 			if bits != 32 {
-				return errInitialChild
+				return initialChildFailure("CP netmask noncontiguous")
 			}
 		case ikev2.INTERNAL_IP4_SUBNET:
 			if size != 0 && size != 8 {
-				return errInitialChild
+				return initialChildFailure("CP subnet length")
 			}
 		case ikev2.SUPPORTED_ATTRIBUTES:
 			if size%2 != 0 || counts[attr.Type] > 1 {
-				return errInitialChild
+				return initialChildFailure("CP supported attributes shape")
 			}
 		case ikev2.APPLICATION_VERSION:
 			if counts[attr.Type] > 1 {
-				return errInitialChild
+				return initialChildFailure("CP application version count")
 			}
 		default:
 			// RFC7296 permits unrequested attributes; unsupported ones are not
@@ -245,21 +258,21 @@ func validateInitialCP(reply, request *ikev2.EncryptedPayloadCP) error {
 		}
 	}
 	if counts[ikev2.INTERNAL_IP4_ADDRESS]+counts[ikev2.INTERNAL_IP6_ADDRESS] == 0 {
-		return errInitialChild
+		return initialChildFailure("CP missing address")
 	}
 	if counts[ikev2.INTERNAL_IP4_NETMASK] > 0 && counts[ikev2.INTERNAL_IP4_ADDRESS] == 0 {
-		return errInitialChild
+		return initialChildFailure("CP netmask without address")
 	}
 	return nil
 }
 
 func validateInitialTS(selected, offered *ikev2.EncryptedPayloadTS) error {
 	if offered == nil || len(selected.TrafficSelectors) == 0 {
-		return errInitialChild
+		return initialChildFailure("TS empty/request")
 	}
 	for _, ts := range selected.TrafficSelectors {
 		if ts.StartPort > ts.EndPort || bytes.Compare(ts.StartAddr, ts.EndAddr) > 0 {
-			return errInitialChild
+			return initialChildFailure("TS reversed range")
 		}
 		matched := false
 		for _, original := range offered.TrafficSelectors {
@@ -269,7 +282,7 @@ func validateInitialTS(selected, offered *ikev2.EncryptedPayloadTS) error {
 			}
 		}
 		if !matched {
-			return errInitialChild
+			return initialChildFailure("TS outside request")
 		}
 	}
 	return nil
