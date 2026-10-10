@@ -69,7 +69,7 @@ In an existing Go module, explicitly pin both SWu and its netlink dependency:
 go mod edit -require=github.com/1239t/swu-go@v0.0.0-20261009235012-6fb3163569ae
 go mod edit -replace=github.com/1239t/swu-go=github.com/lilyzhaun/softvowifi-swu-go@v0.0.0-20261009235012-6fb3163569ae
 go mod edit -replace=github.com/iniwex5/netlink=github.com/lilyzhaun/softvowifi-netlink@v0.0.0-20260915075719-be8893d91893
-go mod download github.com/1239t/swu-go github.com/iniwex5/netlink
+go get github.com/1239t/swu-go/pkg/swu@v0.0.0-20261009235012-6fb3163569ae
 go list -m -json github.com/1239t/swu-go github.com/iniwex5/netlink
 ```
 
@@ -77,6 +77,9 @@ Imports still use `github.com/1239t/swu-go/...`. A consuming **main module does
 not inherit dependency `replace` directives**, so the netlink replacement above
 is required even though this repository already has one in its own `go.mod`.
 The example is a reproducible maintained code pin, not a moving `main` dependency.
+Fetching the actual `pkg/swu` package also records the transitive requirements
+and checksums needed to compile a fresh consumer; downloading only the two
+replacement module archives is not sufficient for that consumer's `go.sum`.
 
 ## Embedding API example
 

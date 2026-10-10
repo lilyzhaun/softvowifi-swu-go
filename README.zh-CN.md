@@ -36,11 +36,12 @@ Go模块声明1.24.0，CI使用Linux/Go1.26。数据平面需要相应XFRM/TUN�
 go mod edit -require=github.com/1239t/swu-go@v0.0.0-20261009235012-6fb3163569ae
 go mod edit -replace=github.com/1239t/swu-go=github.com/lilyzhaun/softvowifi-swu-go@v0.0.0-20261009235012-6fb3163569ae
 go mod edit -replace=github.com/iniwex5/netlink=github.com/lilyzhaun/softvowifi-netlink@v0.0.0-20260915075719-be8893d91893
-go mod download github.com/1239t/swu-go github.com/iniwex5/netlink
+go get github.com/1239t/swu-go/pkg/swu@v0.0.0-20261009235012-6fb3163569ae
 go list -m -json github.com/1239t/swu-go github.com/iniwex5/netlink
 ```
 
 主模块不会继承依赖库的replace，必须显式固定netlink；实际导入路径保持不变，
+go get实际pkg/swu包会补齐新消费模块所需间接依赖和校验和，仅下载两个归档不足以编译。
 上述示例不自动跟随main。英文README给出可编译的真实接口接入辅助函数，
 不调用设备、不代填IMSI/密钥；实际Connect会配置网络，不能当无副作用演示运行。
 
