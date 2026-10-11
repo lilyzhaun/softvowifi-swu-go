@@ -32,7 +32,7 @@ func (provider *diagnosticSIM) GetIMSI() (string, error) {
 func (provider *diagnosticSIM) CalculateAKA(rand, autn []byte) ([]byte, []byte, []byte, []byte, error) {
 	provider.akaCalls++
 	provider.rand, provider.autn = bytes.Clone(rand), bytes.Clone(autn)
-	return []byte("PRIVATE-RES"), []byte("PRIVATE-CK-12345"), []byte("PRIVATE-IK-12345"), []byte("PRIVATE-AUTS"), provider.failure
+	return []byte("PRIVATE-RES"), []byte("PRIVATE-CK-12345"), []byte("PRIVATE-IK-12345"), []byte("PRIVATE-AUTS01"), provider.failure
 }
 
 func (provider *diagnosticSIM) Close() error { return nil }
@@ -51,6 +51,18 @@ func diagnosticChallenge(method uint8) []byte {
 	return (&eap.EAPPacket{Code: 1, Identifier: 7, Type: method, Subtype: 1, Data: attrs}).Encode()
 }
 
+func diagnosticPrimeChallenge() []byte {
+	raw := diagnosticChallenge(50)
+	for offset := 8; offset < len(raw); offset += int(raw[offset+1]) * 4 {
+		if raw[offset] == eap.AT_AUTN {
+			raw[offset+10] |= 0x80
+		}
+	}
+	raw = append(raw, 23, 2, 0, 4, 'W', 'L', 'A', 'N', 24, 1, 0, 1)
+	binary.BigEndian.PutUint16(raw[2:4], uint16(len(raw)))
+	return raw
+}
+
 func Test_EAPDiagnostics_whenSIMAKACompletes(t *testing.T) {
 	for _, method := range []uint8{23, 50} {
 		for _, scenario := range []struct {
@@ -65,8 +77,15 @@ func Test_EAPDiagnostics_whenSIMAKACompletes(t *testing.T) {
 				log, output := diagnosticLogger()
 				provider := &diagnosticSIM{failure: scenario.failure}
 				sess := NewSession(&Config{SIM: provider}, log)
-				payloads, err := sess.handleEAP(diagnosticChallenge(method))
-				if provider.akaCalls != 1 || !bytes.Equal(provider.rand, []byte("PRIVATE-RAND-123")) || !bytes.Equal(provider.autn, []byte("PRIVATE-AUTN-123")) {
+				raw := diagnosticChallenge(method)
+				wantAutn := []byte("PRIVATE-AUTN-123")
+				if method == 50 {
+					raw = diagnosticPrimeChallenge()
+					wantAutn[6] |= 0x80
+					sess.akaIdentity.outer = []byte("public-diagnostic-prime")
+				}
+				payloads, err := sess.handleEAP(raw)
+				if provider.akaCalls != 1 || !bytes.Equal(provider.rand, []byte("PRIVATE-RAND-123")) || !bytes.Equal(provider.autn, wantAutn) {
 					t.Fatal("SIM invocation changed")
 				}
 				switch scenario.name {
@@ -75,7 +94,7 @@ func Test_EAPDiagnostics_whenSIMAKACompletes(t *testing.T) {
 						t.Fatal("sync response changed")
 					}
 					packet, parseErr := eap.Parse(payloads[0].(*ikev2.EncryptedPayloadEAP).EAPMessage)
-					if parseErr != nil || packet.Subtype != eap.SubtypeSyncFailure {
+					if parseErr != nil || packet.Subtype != eap.SubtypeSyncFailure || packet.Type != method {
 						t.Fatal("missing AUTS response")
 					}
 				case "failure", "success":
@@ -87,7 +106,11 @@ func Test_EAPDiagnostics_whenSIMAKACompletes(t *testing.T) {
 				if len(events) != 3 {
 					t.Fatalf("diagnostic count = %d, want received/invoke/result", len(events))
 				}
-				if !reflect.DeepEqual(events[0].AttrTypes, []int{1, 2, 11, 130, 250}) || events[0].Type != int(method) {
+				wantTypes := []int{1, 2, 11, 130, 250}
+				if method == 50 {
+					wantTypes = []int{1, 2, 11, 23, 24, 130, 250}
+				}
+				if !reflect.DeepEqual(events[0].AttrTypes, wantTypes) || events[0].Type != int(method) {
 					t.Fatal("attribute metadata incorrect")
 				}
 				if events[1].Message != "SIM AKA" || events[1].Phase != "invoke" || !events[1].Invoked || events[1].Result != "" {
@@ -102,7 +125,7 @@ func Test_EAPDiagnostics_whenSIMAKACompletes(t *testing.T) {
 	}
 }
 
-func Test_EAPDiagnostics_whenValidPrimeChallengeUpdatesPseudonym(t *testing.T) {
+func Test_EAPDiagnostics_whenValidPrimeChallengeDoesNotCacheAsAKA(t *testing.T) {
 	log, output := diagnosticLogger()
 	provider := &diagnosticSIM{}
 	callbackCalls := 0
@@ -114,7 +137,9 @@ func Test_EAPDiagnostics_whenValidPrimeChallengeUpdatesPseudonym(t *testing.T) {
 		}
 	}}
 	sess := NewSession(cfg, log)
-	packet, err := eap.Parse(diagnosticChallenge(50))
+	identity := []byte("public-diagnostic-prime")
+	sess.akaIdentity.outer = bytes.Clone(identity)
+	packet, err := eap.Parse(diagnosticPrimeChallenge())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,18 +147,9 @@ func Test_EAPDiagnostics_whenValidPrimeChallengeUpdatesPseudonym(t *testing.T) {
 	packet.Data = append(packet.Data, (&eap.Attribute{Type: eap.AT_NEXT_REAUTH_ID, Value: append(value, pseudonym...)}).Encode()...)
 	raw := packet.Encode()
 	clear(raw[12:28])
-	kdf := hmac.New(sha256.New, []byte("PRIVATE-CK-12345PRIVATE-IK-12345"))
-	kdf.Write([]byte{0x20})
-	kdf.Write([]byte("WLAN"))
-	kdf.Write([]byte{0, 4})
-	kdf.Write([]byte("PRIVAT"))
-	kdf.Write([]byte{0, 6})
-	prime := kdf.Sum(nil)
-	master := sha256.New()
-	master.Write([]byte(buildNAI("001010000000001", cfg)))
-	master.Write(prime[16:32])
-	master.Write(prime[:16])
-	keyMaterial := prf256Plus(master.Sum(nil), 208)
+	autn := []byte("PRIVATE-AUTN-123")
+	autn[6] |= 0x80
+	_, keyMaterial := primeIndependentMaterial([]byte("PRIVATE-CK-12345"), []byte("PRIVATE-IK-12345"), autn, identity, "WLAN")
 	mac := hmac.New(sha256.New, keyMaterial[16:48])
 	mac.Write(raw)
 	copy(raw[12:28], mac.Sum(nil)[:16])
@@ -141,8 +157,8 @@ func Test_EAPDiagnostics_whenValidPrimeChallengeUpdatesPseudonym(t *testing.T) {
 	if err != nil || len(response) != 1 {
 		t.Fatal("valid prime challenge failed")
 	}
-	if callbackCalls != 1 || provider.akaCalls != 1 || provider.imsiCalls != 1 || sess.fastReauthCtx.ReauthID != pseudonym {
-		t.Fatal("prime callback/SIM behavior changed")
+	if callbackCalls != 0 || provider.akaCalls != 1 || provider.imsiCalls != 0 || sess.fastReauthCtx.ReauthID != "" || !bytes.Equal(sess.MSK, keyMaterial[80:144]) {
+		t.Fatal("Prime falsely cached Type23 fast data or lost standard MSK/actual identity")
 	}
 	assertDiagnosticPrivacy(t, output, []byte("PRIVATE-"), []byte("001010000000001"))
 }

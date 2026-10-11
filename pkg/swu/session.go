@@ -128,6 +128,7 @@ type Session struct {
 	MSK                  []byte // 来自 EAP 的主会话密钥
 	eapKAut              []byte // EAP-AKA K_aut，用于 Notification 响应 MAC
 	eapNotification      eapNotificationState
+	akaPrime             akaPrimeState
 	akaIdentity          akaIdentityState
 	akaPermanentIdentity bool
 	saInitResp           []byte // RFC 7296 RealMessage2

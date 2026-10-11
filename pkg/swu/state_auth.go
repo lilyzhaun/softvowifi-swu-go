@@ -3,7 +3,6 @@ package swu
 import (
 	"crypto/hmac"
 	"crypto/sha1"
-	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -167,6 +166,9 @@ func (s *Session) handleEAP(eapRaw []byte) ([]ikev2.Payload, error) {
 
 	if pkt.Code != eap.CodeRequest {
 		return nil, fmt.Errorf("unexpected EAP Code: %d", pkt.Code)
+	}
+	if (s.akaPrime.started && pkt.Type != eap.TypeAKAPrime) || (pkt.Type == eap.TypeAKAPrime && s.eapNotification.authenticated && s.eapNotification.method != eap.TypeAKAPrime) {
+		return nil, errAKAPrimeChallenge
 	}
 	if pkt.Type == eap.TypeAKA && pkt.Subtype == eap.SubtypeIdentity {
 		return s.handleAKAIdentity(pkt, eapRaw)
@@ -416,204 +418,7 @@ func (s *Session) handleEAP(eapRaw []byte) ([]ikev2.Payload, error) {
 	// EAP-AKA' Challenge (RFC 5448, 5G 核心网接入)
 	if pkt.Type == eap.TypeAKAPrime && pkt.Subtype == eap.SubtypeChallenge {
 		s.akaIdentity.closed = true
-		s.Logger.Info("收到 EAP-AKA' Challenge (5G 模式)")
-
-		attrs, err := eap.ParseAttributes(pkt.Data)
-		if err != nil {
-			return nil, err
-		}
-		if attr, ok := attrs[eap.AT_RESULT_IND]; ok && len(attr.Value) != 2 {
-			return nil, errEAPNotification
-		}
-
-		atRand, ok1 := attrs[eap.AT_RAND]
-		atAutn, ok2 := attrs[eap.AT_AUTN]
-		atMac, ok3 := attrs[eap.AT_MAC]
-		atKdfInput, ok4 := attrs[eap.AT_KDF_INPUT]
-		atKdf, ok5 := attrs[eap.AT_KDF]
-
-		var keys []uint8
-		for k := range attrs {
-			keys = append(keys, k)
-		}
-		s.Logger.Debug("Received EAP-AKA' Challenge attributes", logger.Any("keys", keys))
-
-		if !ok1 || !ok2 {
-			return nil, errors.New("AKA' Challenge 缺少 RAND 或 AUTN")
-		}
-		if !ok3 {
-			return nil, errors.New("AKA' Challenge 缺少 AT_MAC")
-		}
-
-		// 提取网络名 (AT_KDF_INPUT)
-		networkName := ""
-		if ok4 && len(atKdfInput.Value) > 2 {
-			nameLen := int(atKdfInput.Value[0])<<8 | int(atKdfInput.Value[1])
-			if nameLen > 0 && nameLen+2 <= len(atKdfInput.Value) {
-				networkName = string(atKdfInput.Value[2 : 2+nameLen])
-			}
-		}
-		if networkName == "" {
-			networkName = "WLAN" // 默认回退
-		}
-		s.Logger.Info("AKA' 网络名称", logger.String("network_name", networkName))
-
-		// 检查 AT_KDF 值 (期望值 1 = HMAC-SHA-256)
-		kdfID := uint16(1) // 默认接受
-		if ok5 && len(atKdf.Value) >= 2 {
-			kdfID = uint16(atKdf.Value[0])<<8 | uint16(atKdf.Value[1])
-		}
-		if kdfID != 1 {
-			s.Logger.Warn("AKA' 对端提出非标 KDF，我们只支持 KDF 1 (HMAC-SHA-256)",
-				logger.Int("kdf_id", int(kdfID)))
-			return nil, fmt.Errorf("unsupported AKA' KDF: %d", kdfID)
-		}
-
-		randVal, err := eapAKAAttrTail16(atRand.Value)
-		if err != nil {
-			return nil, err
-		}
-		autnVal, err := eapAKAAttrTail16(atAutn.Value)
-		if err != nil {
-			return nil, err
-		}
-
-		// 运行 SIM 算法 (底层 AT+CSIM 与 4G 完全一样)
-		res, ck, ik, auts, err := s.calculateAKAWithDiagnostics(randVal, autnVal)
-		if err != nil {
-			if errors.Is(err, sim.ErrSyncFailure) {
-				return s.buildEAPSyncFailure(pkt.Identifier, auts)
-			}
-			return nil, fmt.Errorf("SIM AKA failed: %v", err)
-		}
-		if err := validateAKAResult(res, ck, ik); err != nil {
-			return nil, err
-		}
-
-		// RFC 5448 §3.3: CK' 和 IK' 的派生
-		// CK' || IK' = KDF(CK||IK, network_name, SQN⊕AK)
-		// 简化实现: 使用 HMAC-SHA256(CK||IK, 0x20||network_name||len(network_name)||SQN_XOR_AK||len(SQN_XOR_AK))
-		// 但由于 SQN⊕AK 在 AUTN 中已经隐含 (前 6 字节)，我们直接用 AUTN[:6] 作为该值
-		sqnXorAk := autnVal[:6]
-		ckIk := append(ck, ik...)
-		kdfKey := ckIk
-
-		// KDF 输入: FC(1 byte) || P0(网络名) || L0(2 bytes) || P1(SQN⊕AK) || L1(2 bytes)
-		var kdfInput []byte
-		kdfInput = append(kdfInput, 0x20) // FC = 0x20 (3GPP TS 33.402)
-		kdfInput = append(kdfInput, []byte(networkName)...)
-		nnLen := make([]byte, 2)
-		binary.BigEndian.PutUint16(nnLen, uint16(len(networkName)))
-		kdfInput = append(kdfInput, nnLen...)
-		kdfInput = append(kdfInput, sqnXorAk...)
-		sqnLen := make([]byte, 2)
-		binary.BigEndian.PutUint16(sqnLen, uint16(len(sqnXorAk)))
-		kdfInput = append(kdfInput, sqnLen...)
-
-		kdfMac := hmac.New(sha256.New, kdfKey)
-		kdfMac.Write(kdfInput)
-		kdfResult := kdfMac.Sum(nil) // 32 bytes
-		ckPrime := kdfResult[:16]
-		ikPrime := kdfResult[16:32]
-
-		// RFC 5448 §3.4: MK = SHA-256(Identity|IK'|CK')
-		imsi, _ := s.cfg.SIM.GetIMSI()
-		identity := []byte(buildNAI(imsi, s.cfg))
-
-		mkHash := sha256.New()
-		mkHash.Write(identity)
-		mkHash.Write(ikPrime)
-		mkHash.Write(ckPrime)
-		mk := mkHash.Sum(nil) // 32 bytes
-
-		// 从 MK 派生 K_encr(16) + K_aut(32) + K_re(32) + MSK(64) + EMSK(64) 共 208 字节
-		// 使用 PRF+ 基于 HMAC-SHA-256
-		keyMat := prf256Plus(mk, 208)
-		// kEncr := keyMat[:16]     // 未直接使用
-		kAut := keyMat[16:48] // 32 字节 (HMAC-SHA-256 密钥)
-		// kRe := keyMat[48:80]     // 未直接使用
-		msk := keyMat[80:144] // 64 字节
-
-		// MAC 校验（使用 HMAC-SHA256-128）
-		recvMac, err := eapAKAAttrTail16(atMac.Value)
-		if err != nil {
-			return nil, err
-		}
-		if !s.cfg.DisableEAPMACValidation {
-			if err := verifyEAPAKAPrimeMAC(eapRaw, pkt.Data, kAut, recvMac); err != nil {
-				return nil, fmt.Errorf("AKA' MAC 校验失败: %v", err)
-			}
-		}
-
-		s.MSK = msk
-
-		// RFC 4187 Fast Reauth: 捕获 AT_NEXT_REAUTH_ID (5G AKA')
-		if atNextReauth, ok := attrs[eap.AT_NEXT_REAUTH_ID]; ok && s.fastReauthCtx != nil {
-			if len(atNextReauth.Value) > 2 {
-				actualLen := int(atNextReauth.Value[0])<<8 | int(atNextReauth.Value[1])
-				if actualLen > 0 && actualLen+2 <= len(atNextReauth.Value) {
-					nextReauthID := string(atNextReauth.Value[2 : 2+actualLen])
-					s.Logger.Info("捕获到来自 5G ePDG 的 Fast Re-auth 假名标识，激活免流授权通道")
-					s.fastReauthCtx.SaveReauthData(nextReauthID, mk, nil, kAut)
-					if s.cfg.OnFastReauthUpdate != nil {
-						s.cfg.OnFastReauthUpdate(nextReauthID, mk, kAut, nil)
-					}
-				}
-			}
-		}
-
-		// 构造 AKA' 响应
-		respAttrs := []byte{}
-
-		// AT_RES
-		resBits := make([]byte, 2)
-		binary.BigEndian.PutUint16(resBits, uint16(len(res)*8))
-		resValue := append(resBits, res...)
-		atRes := &eap.Attribute{Type: eap.AT_RES, Value: resValue}
-		respAttrs = append(respAttrs, atRes.Encode()...)
-
-		if _, ok := attrs[eap.AT_RESULT_IND]; ok {
-			respAttrs = append(respAttrs, eap.AT_RESULT_IND, 1, 0, 0)
-		}
-		// Existing Type50 identity-request behavior remains tracked by A05.
-		atAnyIdReq := &eap.Attribute{Type: eap.AT_ANY_ID_REQ, Value: make([]byte, 2)}
-		respAttrs = append(respAttrs, atAnyIdReq.Encode()...)
-
-		// AT_MAC (占位 16 字节零)
-		respMacAttr := &eap.Attribute{Type: eap.AT_MAC, Value: make([]byte, 18)}
-		macOffset := len(respAttrs)
-		respAttrs = append(respAttrs, respMacAttr.Encode()...)
-
-		// AT_KDF (回显协商的 KDF ID)
-		kdfVal := make([]byte, 2)
-		binary.BigEndian.PutUint16(kdfVal, kdfID)
-		atKdfResp := &eap.Attribute{Type: eap.AT_KDF, Value: kdfVal}
-		respAttrs = append(respAttrs, atKdfResp.Encode()...)
-
-		respPkt := &eap.EAPPacket{
-			Code:       eap.CodeResponse,
-			Identifier: pkt.Identifier,
-			Type:       eap.TypeAKAPrime,
-			Subtype:    eap.SubtypeChallenge,
-			Data:       respAttrs,
-		}
-
-		eapBytes := respPkt.Encode()
-
-		// 计算响应 MAC: HMAC-SHA-256-128 (取前 16 字节)
-		respMacCalc := hmac.New(sha256.New, kAut)
-		respMacCalc.Write(eapBytes)
-		fullRespMac := respMacCalc.Sum(nil)
-
-		macPos := 8 + macOffset + 4
-		copy(eapBytes[macPos:], fullRespMac[:16])
-
-		s.Logger.Info("EAP-AKA' Challenge 响应构建完成 (5G KDF-SHA256)")
-		_, resultInd := attrs[eap.AT_RESULT_IND]
-		s.completedEAPMethod(eap.TypeAKAPrime, kAut, resultInd, false, 0, nil)
-
-		eapPayload := &ikev2.EncryptedPayloadEAP{EAPMessage: eapBytes}
-		return []ikev2.Payload{eapPayload}, nil
+		return s.handleAKAPrimeChallenge(pkt, eapRaw)
 	}
 
 	// EAP-AKA Fast Re-authentication (RFC 4187 §5.4 / §9.7)
@@ -702,7 +507,7 @@ func (s *Session) handleEAP(eapRaw []byte) ([]ikev2.Payload, error) {
 	// EAP-AKA' Fast Re-authentication is not fully supported.
 	// RFC 5448 §3.3 derives MK = PRF'(K_re, "EAP-AKA' re-auth"|Identity|counter|NONCE_S).
 	// FastReauthContext only stores MK/K_aut/K_encr; full-auth never caches K_re, and
-	// MK+prf256Plus is not that KDF. Fail closed and keep Type50 Challenge.
+	// The Type23 fast context is not that KDF. Fail closed and keep Type50 Challenge.
 	if pkt.Type == eap.TypeAKAPrime && pkt.Subtype == eap.SubtypeReauthentication {
 		s.akaIdentity.closed = true
 		if s.fastReauthCtx == nil || !s.fastReauthCtx.CanUseReauth() {
@@ -1113,60 +918,5 @@ func (s *Session) handleIKEAuthFinalParsed(payloads []ikev2.Payload) error {
 	s.Logger.Info("ePDG_SA_AUTH: IPsec ESP (Child SA) 算法协商成功", logger.String("encr", ikev2.EncrToString(encrID)), logger.String("integ", ikev2.IntegToString(integID)), logger.Bool("esn", false))
 
 	s.Logger.Debug("Child SA 已建立", logger.Uint32("localSPI", s.childSPI), logger.Uint32("remoteSPI", remoteSPI))
-	return nil
-}
-
-// prf256Plus 实现 RFC 5448 §3.4 定义的 PRF+ 密钥扩展算法 (基于 HMAC-SHA-256)。
-// 输出 outLen 字节的密钥材料: T1 = HMAC-SHA256(key, 0x01) , T2 = HMAC-SHA256(key, T1 || 0x02) , ...
-func prf256Plus(key []byte, outLen int) []byte {
-	var result []byte
-	var prev []byte
-	for i := byte(1); len(result) < outLen; i++ {
-		h := hmac.New(sha256.New, key)
-		h.Write(prev)
-		h.Write([]byte{i})
-		prev = h.Sum(nil)
-		result = append(result, prev...)
-	}
-	return result[:outLen]
-}
-
-// verifyEAPAKAPrimeMAC 校验 EAP-AKA' 报文中的 AT_MAC (使用 HMAC-SHA256-128，取前 16 字节)。
-// eapRaw: 原始的完整 EAP 报文 (包含 header)
-// attrData: EAP-AKA 数据域（用于定位 AT_MAC 占位符）
-// kAut: 32 字节的 K_aut 密钥
-// recvMac: 从 AT_MAC 属性中提取的 16 字节签名
-func verifyEAPAKAPrimeMAC(eapRaw []byte, attrData []byte, kAut []byte, recvMac []byte) error {
-	// 与 4G AKA 的 verifyEAPAKAMAC 逻辑完全相同，唯一不同是用 sha256.New 代替 sha1.New
-	eapCopy := make([]byte, len(eapRaw))
-	copy(eapCopy, eapRaw)
-
-	// 寻找并清零 AT_MAC 的值域（Header 偏移 8 字节后的 attrData 中）
-	for i := 0; i < len(attrData)-3; {
-		attrType := attrData[i]
-		attrLen := int(attrData[i+1]) * 4
-		if attrLen < 4 {
-			break
-		}
-		if attrType == eap.AT_MAC {
-			// 在 eapCopy 中对应的位置清零 MAC 值 (跳过 2 字节保留域 + 16 字节 MAC)
-			macStart := 8 + i + 4 // EAP header(8) + attr offset + Type(1)+Len(1)+Reserved(2)
-			if macStart+16 <= len(eapCopy) {
-				for j := 0; j < 16; j++ {
-					eapCopy[macStart+j] = 0
-				}
-			}
-			break
-		}
-		i += attrLen
-	}
-
-	h := hmac.New(sha256.New, kAut)
-	h.Write(eapCopy)
-	calcMac := h.Sum(nil)[:16] // HMAC-SHA256-128: 取前 16 字节
-
-	if !hmac.Equal(calcMac, recvMac) {
-		return fmt.Errorf("AKA' MAC mismatch: calc=%x recv=%x", calcMac, recvMac)
-	}
 	return nil
 }
