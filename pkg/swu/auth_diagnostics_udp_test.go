@@ -23,7 +23,6 @@ func Test_IKEAuthMetadata_whenUDPPeerSendsNotifyBesideChallenge(t *testing.T) {
 	}}
 	keys := referenceAKAKeys(&provider.vectorSIM, false)
 	challenge := referenceChallenge(keys[16:32], false)
-	want := referenceResponse(bytes.Clone(provider.res), keys[16:32], false)
 	secret := []byte(notifySecret)
 	log, output := diagnosticLogger()
 	sess := NewSession(&Config{
@@ -51,18 +50,20 @@ func Test_IKEAuthMetadata_whenUDPPeerSendsNotifyBesideChallenge(t *testing.T) {
 		{kind: 41, body: independentNotifyBody(41101, secret)},
 		{kind: 41, body: independentNotifyBody(16432, nil)},
 	}))
-	outgoing := peer.decrypt(t, peer.receive(t))
-	if len(outgoing) != 1 || outgoing[0].kind != 48 || !bytes.Equal(outgoing[0].body, want) {
-		t.Fatal("AUTH loop still must answer only EAP; this records the existing gap")
-	}
-	peer.send(t, peer.protect(t, []akaWirePayload{{kind: 48, body: []byte{4, 0xa7, 0, 4}}}))
 	select {
 	case <-finished:
 	case <-ctx.Done():
-		t.Fatal("Connect did not consume peer EAP Failure")
+		t.Fatal("Connect did not reject malformed/duplicate equipment request")
 	}
-	if connectErr == nil || connectErr.Error() != "unexpected EAP Code: 4" {
-		t.Fatalf("terminal EAP failure changed: %v", connectErr)
+	if connectErr == nil || connectErr.Error() != "invalid DEVICE_IDENTITY request" || provider.calls != 0 {
+		t.Fatal("malformed equipment request was not rejected before SIM")
+	}
+	if err := peer.conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := peer.conn.ReadFromUDP(make([]byte, 4096))
+	if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+		t.Fatal("invalid equipment request produced a UDP response")
 	}
 	events := authMetadataEvents(t, output)
 	if len(events) == 0 {

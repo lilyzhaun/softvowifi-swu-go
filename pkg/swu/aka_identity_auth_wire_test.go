@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,11 +31,17 @@ func TestNotificationConnectProtectedSuccessThenAUTH(t *testing.T) {
 	testAKAIdentityAUTH(t, "notification")
 }
 
+func TestAUTHRoundConnectCoPayloadReachesFinalAUTH(t *testing.T) {
+	for _, layout := range []string{"device41101", "device16432"} {
+		t.Run(layout, func(t *testing.T) { testAKAIdentityAUTH(t, layout) })
+	}
+}
+
 func testAKAIdentityAUTH(t *testing.T, layout string) {
 	t.Helper()
 	peer := newAKAWirePeer(t)
 	send := func(payloads []akaWirePayload) {
-		if layout == "unfragmented" || layout == "notification" {
+		if layout == "unfragmented" || layout == "notification" || strings.HasPrefix(layout, "device") {
 			peer.send(t, peer.protect(t, payloads))
 			return
 		}
@@ -45,6 +52,9 @@ func testAKAIdentityAUTH(t *testing.T, layout string) {
 	sess.cfg.LocalAddr, sess.cfg.EpDGAddr = "127.0.0.1", "127.0.0.1"
 	sess.cfg.EpDGPort = uint16(peer.conn.LocalAddr().(*net.UDPAddr).Port)
 	sess.cfg.APN = "ims"
+	if strings.HasPrefix(layout, "device") {
+		sess.cfg.IMEI = "123456789012345"
+	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	finished := make(chan struct{})
 	established := make(chan struct{})
@@ -97,10 +107,29 @@ func testAKAIdentityAUTH(t *testing.T, layout string) {
 			}
 		}
 	}
-	send([]akaWirePayload{{kind: 48, body: challenge}})
+	challengePayloads := []akaWirePayload{{kind: 48, body: challenge}}
+	identityCode := uint16(41101)
+	if layout == "device16432" {
+		identityCode = 16432
+	}
+	if strings.HasPrefix(layout, "device") {
+		challengePayloads = append(challengePayloads, akaWirePayload{kind: 41, body: independentNotifyBody(identityCode, []byte{0, 1, 1})})
+	}
+	send(challengePayloads)
 	response := peer.decrypt(t, peer.receive(t))
-	if len(response) != 1 || response[0].body[5] != 1 {
+	wantCount := 1
+	if strings.HasPrefix(layout, "device") {
+		wantCount = 2
+	}
+	if len(response) != wantCount || response[0].body[5] != 1 {
 		t.Fatal("missing Challenge response")
+	}
+	if strings.HasPrefix(layout, "device") {
+		want := referenceHex(t, "0100a08d00090121436587092143f5")
+		binary.BigEndian.PutUint16(want[2:4], identityCode)
+		if response[1].kind != 41 || !bytes.Equal(response[1].body, want) {
+			t.Fatal("Connect omitted/mutated requested equipment identity in the same verified Challenge round")
+		}
 	}
 	if err := verifyAKAWireMAC(response[0].body, keys[16:32]); err != nil {
 		t.Fatal(err)
@@ -145,7 +174,7 @@ func testAKAIdentityAUTH(t *testing.T, layout string) {
 		{kind: 44, body: []byte{1, 0, 0, 0, 7, 0, 0, 16, 0, 0, 255, 255, 192, 0, 2, 10, 192, 0, 2, 10}},
 		{kind: 45, body: []byte{1, 0, 0, 0, 7, 0, 0, 16, 0, 0, 255, 255, 0, 0, 0, 0, 255, 255, 255, 255}},
 	}
-	if layout != "unfragmented" && layout != "notification" {
+	if layout != "unfragmented" && layout != "notification" && !strings.HasPrefix(layout, "device") {
 		final = append(final, akaWirePayload{kind: 41, body: independentNotifyBody(16432, bytes.Repeat([]byte{0x71}, 3000))})
 	}
 	send(final)

@@ -788,29 +788,34 @@ func (s *Session) buildDeviceIdentityResponse(identityType uint8) ([]ikev2.Paylo
 	imei := s.cfg.IMEI
 	if imei == "" {
 		if p, ok := s.cfg.SIM.(sim.IMEIProvider); ok {
-			if v, err := p.GetIMEI(); err == nil && v != "" {
-				imei = v
+			v, err := p.GetIMEI()
+			if err != nil {
+				return nil, errors.New("equipment identity unavailable")
 			}
+			imei = v
 		}
 	}
-	if imei == "" {
-		imei = "000000000000000"
+	if identityType != 1 && identityType != 2 || (len(imei) != 15 && len(imei) != 16) {
+		return nil, errors.New("equipment identity unavailable")
+	}
+	nonzero := false
+	for i := range len(imei) {
+		if imei[i] < '0' || imei[i] > '9' {
+			return nil, errors.New("invalid equipment identity")
+		}
+		nonzero = nonzero || imei[i] != '0'
+	}
+	if !nonzero {
+		return nil, errors.New("equipment identity unavailable")
 	}
 
-	digits := ""
-	switch identityType {
-	case 0x02: // IMEISV (16 位)
-		if len(imei) >= 16 {
-			digits = imei[:16]
-		} else {
-			digits = imei + "0"
-		}
-	default: // 0x01 IMEI (15 位 + F)
-		d := imei
-		if len(d) > 15 {
-			d = d[:15]
-		}
-		digits = d + "F"
+	// TS24.302 7.2.6: return the available IMEISV, otherwise the available
+	// IMEI. Never manufacture an SV digit or an all-zero substitute.
+	digits := imei
+	identityType = 2
+	if len(imei) == 15 {
+		identityType = 1
+		digits = imei + "F"
 	}
 
 	// BCD 编码（每 2 位数字 1 字节，低半字节在前）
