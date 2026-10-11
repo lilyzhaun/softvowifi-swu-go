@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/1239t/swu-go/pkg/eap"
 	"github.com/1239t/swu-go/pkg/ikev2"
 )
 
@@ -146,26 +147,64 @@ func (s *Session) verifyPostEAPResponderAUTH(payloads []ikev2.Payload) ([]byte, 
 }
 
 func (s *Session) processIKEAuthEAPRound(payloads []ikev2.Payload) ([]ikev2.Payload, bool, error) {
+	if rej := ikeAuthErrorNotify(payloads); rej != nil {
+		return nil, false, rej
+	}
+	var equipment *ikev2.EncryptedPayloadNotify
+	var eapPayload *ikev2.EncryptedPayloadEAP
+	for _, pl := range payloads {
+		switch p := pl.(type) {
+		case *ikev2.EncryptedPayloadEAP:
+			if eapPayload != nil {
+				return nil, false, errors.New("multiple EAP payloads in AUTH round")
+			}
+			eapPayload = p
+		case *ikev2.EncryptedPayloadNotify:
+			if p.NotifyType != ikev2.DEVICE_IDENTITY && p.NotifyType != ikev2.DEVICE_IDENTITY_3GPP {
+				continue
+			}
+			if equipment != nil || len(p.SPI) != 0 || p.ProtocolID > ikev2.ProtoIKE || len(p.NotifyData) != 3 || p.NotifyData[0] != 0 || p.NotifyData[1] != 1 || (p.NotifyData[2] != 1 && p.NotifyData[2] != 2) {
+				return nil, false, errors.New("invalid DEVICE_IDENTITY request")
+			}
+			equipment = p
+		}
+	}
+	if equipment != nil && !s.eapNotification.authenticated {
+		if eapPayload == nil {
+			return nil, false, errors.New("DEVICE_IDENTITY before network authentication")
+		}
+		p, err := eap.Parse(eapPayload.EAPMessage)
+		if err != nil || p.Code != eap.CodeRequest || (p.Type != eap.TypeAKA && p.Type != eap.TypeAKAPrime) || (p.Subtype != eap.SubtypeChallenge && p.Subtype != eap.SubtypeNotificationAlt) {
+			return nil, false, errors.New("DEVICE_IDENTITY before network authentication")
+		}
+	}
 	if err := s.captureEAPIDr(payloads); err != nil {
 		return nil, false, err
 	}
-	var eapPayload *ikev2.EncryptedPayloadEAP
-	for _, pl := range payloads {
-		if e, ok := pl.(*ikev2.EncryptedPayloadEAP); ok {
-			eapPayload = e
+	var response []ikev2.Payload
+	done := false
+	if eapPayload != nil {
+		var err error
+		response, err = s.handleEAP(eapPayload.EAPMessage)
+		if err != nil {
+			return nil, false, err
 		}
+		done = response == nil
 	}
-	if eapPayload == nil {
-		return nil, false, nil
+	// A verified failure must be acknowledged, never accompanied by equipment
+	// identity; Connect then follows the existing terminal notification path.
+	if equipment != nil && s.eapNotification.failure == nil {
+		if !s.eapNotification.authenticated {
+			return nil, false, errors.New("DEVICE_IDENTITY before network authentication")
+		}
+		identity, err := s.buildDeviceIdentityResponse(equipment.NotifyData[2])
+		if err != nil {
+			return nil, false, err
+		}
+		identity[0].(*ikev2.EncryptedPayloadNotify).NotifyType = equipment.NotifyType
+		response = append(response, identity...)
 	}
-	resp, err := s.handleEAP(eapPayload.EAPMessage)
-	if err != nil {
-		return nil, false, err
-	}
-	if resp == nil {
-		return nil, true, nil
-	}
-	return resp, false, nil
+	return response, done, nil
 }
 
 func requirePostEAPMSK(msk []byte) error {

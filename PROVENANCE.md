@@ -82,6 +82,10 @@
 
 基准`9661242`、分支`fix/a06-eap-notification`。依据RFC4187§6.1/6.2/9.10/9.11、RFC5448方法MAC，真实网络入口严格阶段/原字节MAC/TLV/一次通知及缓存所有权，失败正确ACK后终止不回身份，成功绑定AT_RESULT_IND与终态Identifier；已完成方法上下文的fast通知加密counter绑定。首次编译前置失败不计RED，原pin同字节只读overlay19FAIL2PASS→独立矩阵/正常Connect成功与失败ACK绿色，全库855PASS22旧opt-in跳过、后继swu677PASS及最终聚焦31PASS/vet通过。没有外部复制、运营商分支/算法降级，MIT/module/unknown不改；完整Fast Reauth与A05 Prime KDF/实卡通知/长期仍未验收，详见[专题](docs/eap-notifications.md)。
 
+### A07：AUTH共包统一应答与认证前隐私
+
+基准`ed8349d`、分支`fix/a07-auth-copayload`。按TS24.302 V18.7.0 §7.2.6/8.2.9.2先验证本轮全部载荷/请求格式，成功方法MAC后统一组合EAP/设备应答；两码/独立与共包一致，早期/错误/重复/无身份拒绝，不制造零身份或SV补零。新矩阵19FAIL3PASS→聚焦60PASS、一次库880PASS22旧opt-in跳过1既有缺口预期FAIL，保留原非法请求/metadata/privacy并加强为拒绝/SIM0/无应答后swu701PASS/vet。无客户端复制/特判/降级，MIT/module/unknown保持；实卡共包/PKI/完整Fast/Prime/长期未追认，详见[专题](docs/auth-round-copayloads.md)。
+
 ## 历史：本地维护跨度（2026-09-15 首导前源码就绪核对）
 
 首次本地导入已经包含 A/B；之后的维护远不止两个修改。以下为可追溯的本地历史分组与测试入口，不是相对纯上游的完整 diff 或逐行法律审查，未找到的首次导入前来源继续 unknown。

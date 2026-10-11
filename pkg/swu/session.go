@@ -476,39 +476,6 @@ func (s *Session) connectOnce() (result error) {
 				break
 			}
 
-			// 3GPP TS 24.302: ePDG 请求 DEVICE_IDENTITY（IMEI）时，应答并继续等 EAP
-			// （对齐 vowifi_gateway state_2 的 device_identity_requested 处理）
-			deviceIdentityType := uint8(0)
-			deviceIdentityNotifyType := uint16(0)
-			for _, pl := range payloads {
-				if n, ok := pl.(*ikev2.EncryptedPayloadNotify); ok {
-					if n.NotifyType == ikev2.DEVICE_IDENTITY || n.NotifyType == ikev2.DEVICE_IDENTITY_3GPP {
-						deviceIdentityNotifyType = n.NotifyType
-						if len(n.NotifyData) > 0 {
-							deviceIdentityType = n.NotifyData[len(n.NotifyData)-1]
-						} else {
-							deviceIdentityType = 0x01
-						}
-						break
-					}
-				}
-			}
-			if deviceIdentityType != 0 {
-				s.Logger.Info("收到 DEVICE_IDENTITY 请求，应答 IMEI/IMEISV",
-					logger.Int("type", int(deviceIdentityType)))
-				respPayloads, err := s.buildDeviceIdentityResponse(deviceIdentityType)
-				if err != nil {
-					return err
-				}
-				// Preserve the requested legacy/private Notify code on the reply.
-				respPayloads[0].(*ikev2.EncryptedPayloadNotify).NotifyType = deviceIdentityNotifyType
-				respData, err = s.sendEncryptedWithRetry(respPayloads, ikev2.IKE_AUTH)
-				if err != nil {
-					return err
-				}
-				continue
-			}
-
 			if len(s.MSK) == 0 {
 				var types []int
 				var notifies []uint16
