@@ -308,7 +308,7 @@ func validateInitialCP(reply, request *ikev2.EncryptedPayloadCP) error {
 			if size != 0 && size != 4 {
 				return initialChildFailure("CP IPv4 server length")
 			}
-		case ikev2.INTERNAL_IP6_DNS, ikev2.P_CSCF_IP6_ADDRESS, ikev2.ASSIGNED_PCSCF_IP6_ADDRESS, ikev2.INTERNAL_IP6_DHCP:
+		case ikev2.INTERNAL_IP6_DNS, ikev2.P_CSCF_IP6_ADDRESS, ikev2.INTERNAL_IP6_DHCP:
 			if size != 0 && size != 16 {
 				return initialChildFailure("CP IPv6 server length")
 			}

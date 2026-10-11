@@ -53,8 +53,11 @@ func ParseCPConfig(cp *EncryptedPayloadCP) *CPConfig {
 				cfg.IPv6PCSCF = append(cfg.IPv6PCSCF, net.IP(attr.Value[:16]))
 			}
 		case ASSIGNED_PCSCF_IP6_ADDRESS:
-			if len(attr.Value) >= 16 {
-				cfg.IPv6PCSCF = append(cfg.IPv6PCSCF, net.IP(attr.Value[:16]))
+			// Private-use attribute: retain only the existing 16-byte format.
+			// RFC7296 3.15.1 requires ignoring unsupported formats, not
+			// truncating them or applying standard P_CSCF_IP6_ADDRESS rules.
+			if len(attr.Value) == 16 {
+				cfg.IPv6PCSCF = append(cfg.IPv6PCSCF, net.IP(attr.Value))
 			}
 		}
 	}
