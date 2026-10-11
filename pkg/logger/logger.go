@@ -11,6 +11,9 @@ import (
 )
 
 var (
+	// globalMu guards both globals: the lazy default and an injected logger
+	// may be published while other goroutines are already logging.
+	globalMu     sync.RWMutex
 	globalLogger *zap.Logger
 	globalSugar  *zap.SugaredLogger
 	once         sync.Once
@@ -105,40 +108,56 @@ func initLogger(level, format string) error {
 	)
 
 	// 创建 Logger
-	globalLogger = zap.New(core, zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel))
-	globalSugar = globalLogger.Sugar()
+	created := zap.New(core, zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel))
+	globalMu.Lock()
+	globalLogger = created
+	globalSugar = created.Sugar()
+	globalMu.Unlock()
 
 	return nil
 }
 
 // SetLogger 设置外部 Logger（允许主应用注入自己的 logger）
 func SetLogger(l *zap.Logger) {
+	sugar := l.Sugar()
+	globalMu.Lock()
 	globalLogger = l
-	globalSugar = l.Sugar()
+	globalSugar = sugar
+	globalMu.Unlock()
+}
+
+func current() (*zap.Logger, *zap.SugaredLogger) {
+	globalMu.RLock()
+	defer globalMu.RUnlock()
+	return globalLogger, globalSugar
 }
 
 // Get 获取全局 Logger
 func Get() *zap.Logger {
-	if globalLogger == nil {
+	l, _ := current()
+	if l == nil {
 		Init("info", "console")
+		l, _ = current()
 	}
-	return globalLogger
+	return l
 }
 
 // Sugar 获取 SugaredLogger
 func Sugar() *zap.SugaredLogger {
-	if globalSugar == nil {
+	_, sugar := current()
+	if sugar == nil {
 		Init("info", "console")
+		_, sugar = current()
 	}
-	return globalSugar
+	return sugar
 }
 
 // Sync 刷新日志缓冲
 func Sync() {
-	if globalLogger != nil {
+	if l, _ := current(); l != nil {
 		done := make(chan struct{})
 		go func() {
-			_ = globalLogger.Sync()
+			_ = l.Sync()
 			close(done)
 		}()
 		select {
