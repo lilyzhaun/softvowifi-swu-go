@@ -74,6 +74,14 @@ func (s *Session) buildIKEAuthInitPayloads() ([]ikev2.Payload, error) {
 
 	// 利用工厂方法生成覆盖高、中、低兼容性以及 ESN 处理的 Proposal 支持列表
 	proposals := ikev2.CreateMultiProposalESP(spiBytes)
+	if number := s.cfg.InitialChildProposalNumber; number != 0 {
+		if int(number) > len(proposals) {
+			return nil, errors.New("initial Child proposal is not a complete original offer")
+		}
+		chosen := *proposals[number-1]
+		chosen.ProposalNum = 1
+		proposals = []*ikev2.Proposal{&chosen}
+	}
 
 	// 如果用户级配置指定了只发开启 ESN，则后续可在此二次过滤
 	// 但默认状态我们发送大而全的列表
@@ -770,9 +778,7 @@ func (s *Session) handleIKEAuthFinalParsed(payloads []ikev2.Payload) error {
 		return rej
 	}
 	selection, err := s.selectInitialChild(payloads)
-	if err != nil {
-		return err
-	}
+	selectionErr := err
 
 	lifetime, mobike := s.authLifetime, s.mobikeSupported
 	var ticket []byte
@@ -822,6 +828,12 @@ func (s *Session) handleIKEAuthFinalParsed(payloads []ikev2.Payload) error {
 				ticket = append([]byte(nil), p.NotifyData...)
 			}
 		}
+	}
+	if selectionErr != nil {
+		if hint := s.initialChildProposalNumberHint(payloads); hint != nil {
+			return hint
+		}
+		return selectionErr
 	}
 	if redirect != nil {
 		return redirect

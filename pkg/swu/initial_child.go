@@ -109,7 +109,15 @@ func (s *Session) selectInitialChild(payloads []ikev2.Payload) (initialChildSele
 	if offered == nil {
 		return empty, initialChildFailure("proposal number")
 	}
-	if len(p.Transforms) != len(offered.Transforms) {
+	// RFC7296 1.2 permits an explicit DH=NONE in the initial AUTH SA.
+	// An omitted optional DH in our offer means NONE, not an extra group.
+	additionalNone := 0
+	for _, transform := range p.Transforms {
+		if initialChildImplicitDHNone(transform, offered) {
+			additionalNone++
+		}
+	}
+	if len(p.Transforms) != len(offered.Transforms)+additionalNone {
 		return empty, initialChildFailure("transform count")
 	}
 	selection := initialChildSelection{proposal: p}
@@ -119,6 +127,9 @@ func (s *Session) selectInitialChild(payloads []ikev2.Payload) (initialChildSele
 			return empty, initialChildFailure("duplicate transform")
 		}
 		seen[transform.Type] = true
+		if initialChildImplicitDHNone(transform, offered) {
+			continue
+		}
 		matched := false
 		for _, original := range offered.Transforms {
 			if transform.Type != original.Type || transform.ID != original.ID || len(transform.Attributes) != len(original.Attributes) {
@@ -149,6 +160,10 @@ func (s *Session) selectInitialChild(payloads []ikev2.Payload) (initialChildSele
 			// All six original complete offers explicitly select NO_ESN.
 			if transform.ID != 0 {
 				return empty, initialChildFailure("unoffered ESN")
+			}
+		case ikev2.TransformTypeDH:
+			if transform.ID != 0 || len(transform.Attributes) != 0 {
+				return empty, initialChildFailure("unoffered DH")
 			}
 		default:
 			return empty, initialChildFailure("unoffered transform type")
@@ -236,6 +251,18 @@ func (s *Session) selectInitialChild(payloads []ikev2.Payload) (initialChildSele
 		selection.cp.IPv6Prefix = 0
 	}
 	return selection, nil
+}
+
+func initialChildImplicitDHNone(transform *ikev2.Transform, offered *ikev2.Proposal) bool {
+	if transform.Type != ikev2.TransformTypeDH || transform.ID != 0 || len(transform.Attributes) != 0 {
+		return false
+	}
+	for _, original := range offered.Transforms {
+		if original.Type == ikev2.TransformTypeDH {
+			return false
+		}
+	}
+	return true
 }
 
 func selectorsShareFamilyProtocol(a, b *ikev2.TrafficSelector) bool {

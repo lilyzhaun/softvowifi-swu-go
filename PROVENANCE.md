@@ -98,6 +98,12 @@
 
 基准`5bb43ce`、分支`fix/a09-network-binding`。正常Config/Session控制DNS/UDP socket，显式DNS/同族/上下文/错误不default fallback，旧nil保持；从绑定socket读实际SO_MARK，只给出站XFRM OutputMark并贯穿Child rekey，不改变入站/ownership selector。原接口2FAIL→10PASS、输出mark1FAIL→路由/旧回滚22PASS，全库947PASS22旧opt-in跳过/vet。仅Go官方net控制/Linux与现有netlink/原源码，无私有Android mark协议复制/特判/降级，MIT/module/unknown不变；Android来源/丢失/PANI/规范候选及实机仍待主仓接线，见[专题](docs/network-socket-binding.md)。
 
+### 初始Child后继：可选NONE与全新单报价编号兼容
+
+负责人`lilyzhaun`，基准`8082e15`、分支`fix/threeuk-initial-child-20261011`。依据RFC7296§1.2/3.3，初始AUTH可选无属性DH=NONE等价于未选额外DH，不等于接受非零组或猜ESN。原六套合法补充DH0先6FAIL，原算法/属性/ESN及CP/TS拒绝保持。
+
+对于严格全事务验证后发现的原完整报价错编号1，仅返回仍为拒绝的typed提示，允许调用者清理旧Session后用原完整套件构造一次全新单报价；未知/歧义/坏认证或通知/CP/TS不产生资格，单报价后不再次提示。真实受保护最终AUTH的提示缺失先1FAIL，修后直接正负与原事务回归通过；主仓独立正常UDP→EAP→双方AUTH另验全新SPI/KE/nonce与一次重试，库不自动重连、变更默认或持久学习。来源仅RFC7296、Go标准库及原维护源码，无外部客户端复制、新依赖/算法/运营商分支；MIT/module/unknown保持，详见[初始事务后继](docs/initial-child-transaction.md#后继可选dhnone与错编号的全新单报价)。设备/业务和最终真实pin交付不由此文档预报。
+
 ## 历史：本地维护跨度（2026-09-15 首导前源码就绪核对）
 
 首次本地导入已经包含 A/B；之后的维护远不止两个修改。以下为可追溯的本地历史分组与测试入口，不是相对纯上游的完整 diff 或逐行法律审查，未找到的首次导入前来源继续 unknown。
