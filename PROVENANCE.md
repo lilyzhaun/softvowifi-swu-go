@@ -78,6 +78,10 @@
 
 基准`2030fa4`、分支`fix/a04-explicit-mid`。删除发送路径的全局计数推断，一次分配传给原SK/全部SKF/调试状态/window/整组重传；真实并发RED另复现的三处出站状态race只以对应小锁与原NAT timestamp读写同步处理，不新建调度层。原完整性/I-R/MID/FIFO/取消/参数守卫保留；普通/分片CBC/GCM确定性6FAIL1PASS→聚焦9PASS，全库827PASS22旧opt-in跳过/vet通过。来源只RFC7296§2.1/2.3、RFC7383§2.5及原源码/Go标准库，没有外部复制或算法/配置/身份变化，MIT/module/unknown保持。新Session编号复用不当并发IKE rekey旧pending退役/整Session线程原子性或实卡长期保证，见[专题](docs/message-id-transactions.md)。
 
+### A06：通知P/S、方法MAC、结果协商与重放
+
+基准`9661242`、分支`fix/a06-eap-notification`。依据RFC4187§6.1/6.2/9.10/9.11、RFC5448方法MAC，真实网络入口严格阶段/原字节MAC/TLV/一次通知及缓存所有权，失败正确ACK后终止不回身份，成功绑定AT_RESULT_IND与终态Identifier；已完成方法上下文的fast通知加密counter绑定。首次编译前置失败不计RED，原pin同字节只读overlay19FAIL2PASS→独立矩阵/正常Connect成功与失败ACK绿色，全库855PASS22旧opt-in跳过、后继swu677PASS及最终聚焦31PASS/vet通过。没有外部复制、运营商分支/算法降级，MIT/module/unknown不改；完整Fast Reauth与A05 Prime KDF/实卡通知/长期仍未验收，详见[专题](docs/eap-notifications.md)。
+
 ## 历史：本地维护跨度（2026-09-15 首导前源码就绪核对）
 
 首次本地导入已经包含 A/B；之后的维护远不止两个修改。以下为可追溯的本地历史分组与测试入口，不是相对纯上游的完整 diff 或逐行法律审查，未找到的首次导入前来源继续 unknown。

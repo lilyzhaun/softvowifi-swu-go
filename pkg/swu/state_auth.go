@@ -140,8 +140,23 @@ func (s *Session) handleEAP(eapRaw []byte) ([]ikev2.Payload, error) {
 	if err != nil {
 		return nil, err
 	}
+	if pkt.Code == eap.CodeRequest && (pkt.Type == eap.TypeAKA || pkt.Type == eap.TypeAKAPrime) && pkt.Subtype == eap.SubtypeNotificationAlt {
+		return s.handleEAPNotification(pkt, eapRaw)
+	}
+	if failure := s.eapNotification.failure; failure != nil {
+		return nil, failure
+	}
+	if s.eapNotification.request != nil && pkt.Code == eap.CodeRequest {
+		return nil, errEAPNotification
+	}
 
 	if pkt.Code == eap.CodeSuccess {
+		if s.eapNotification.request != nil && pkt.Identifier != s.eapNotification.request[1] {
+			return nil, errEAPNotification
+		}
+		if s.eapNotification.resultInd && !s.eapNotification.success {
+			return nil, errEAPNotification
+		}
 		// EAP 成功！
 		s.Logger.Debug("收到 EAP Success")
 		// 在 IKE_AUTH 中，EAP Success 通常伴随着服务器的 AUTH 载荷。
@@ -202,6 +217,9 @@ func (s *Session) handleEAP(eapRaw []byte) ([]ikev2.Payload, error) {
 			return nil, err
 		}
 		s.logAKARequestStructure(attrs)
+		if attr, ok := attrs[eap.AT_RESULT_IND]; ok && len(attr.Value) != 2 {
+			return nil, errEAPNotification
+		}
 
 		atRand, ok1 := attrs[eap.AT_RAND]
 		atAutn, ok2 := attrs[eap.AT_AUTN]
@@ -354,6 +372,8 @@ func (s *Session) handleEAP(eapRaw []byte) ([]ikev2.Payload, error) {
 		macPos := 8 + macOffset + 4
 		copy(eapBytes[macPos:], fullMac[:16])
 		s.logAKAResponseStructure(eapBytes, kAut, akaResponseExpectation{identifier: pkt.Identifier, resOctets: len(res)})
+		_, resultInd := attrs[eap.AT_RESULT_IND]
+		s.completedEAPMethod(eap.TypeAKA, kAut, resultInd, false, 0, nil)
 
 		eapPayload := &ikev2.EncryptedPayloadEAP{EAPMessage: eapBytes}
 
@@ -395,11 +415,15 @@ func (s *Session) handleEAP(eapRaw []byte) ([]ikev2.Payload, error) {
 
 	// EAP-AKA' Challenge (RFC 5448, 5G 核心网接入)
 	if pkt.Type == eap.TypeAKAPrime && pkt.Subtype == eap.SubtypeChallenge {
+		s.akaIdentity.closed = true
 		s.Logger.Info("收到 EAP-AKA' Challenge (5G 模式)")
 
 		attrs, err := eap.ParseAttributes(pkt.Data)
 		if err != nil {
 			return nil, err
+		}
+		if attr, ok := attrs[eap.AT_RESULT_IND]; ok && len(attr.Value) != 2 {
+			return nil, errEAPNotification
 		}
 
 		atRand, ok1 := attrs[eap.AT_RAND]
@@ -548,7 +572,10 @@ func (s *Session) handleEAP(eapRaw []byte) ([]ikev2.Payload, error) {
 		atRes := &eap.Attribute{Type: eap.AT_RES, Value: resValue}
 		respAttrs = append(respAttrs, atRes.Encode()...)
 
-		// 增加 AT_ANY_ID_REQ 主动向 5G ePDG 恳求下发 Fast Re-auth 假名
+		if _, ok := attrs[eap.AT_RESULT_IND]; ok {
+			respAttrs = append(respAttrs, eap.AT_RESULT_IND, 1, 0, 0)
+		}
+		// Existing Type50 identity-request behavior remains tracked by A05.
 		atAnyIdReq := &eap.Attribute{Type: eap.AT_ANY_ID_REQ, Value: make([]byte, 2)}
 		respAttrs = append(respAttrs, atAnyIdReq.Encode()...)
 
@@ -582,6 +609,8 @@ func (s *Session) handleEAP(eapRaw []byte) ([]ikev2.Payload, error) {
 		copy(eapBytes[macPos:], fullRespMac[:16])
 
 		s.Logger.Info("EAP-AKA' Challenge 响应构建完成 (5G KDF-SHA256)")
+		_, resultInd := attrs[eap.AT_RESULT_IND]
+		s.completedEAPMethod(eap.TypeAKAPrime, kAut, resultInd, false, 0, nil)
 
 		eapPayload := &ikev2.EncryptedPayloadEAP{EAPMessage: eapBytes}
 		return []ikev2.Payload{eapPayload}, nil
@@ -601,6 +630,9 @@ func (s *Session) handleEAP(eapRaw []byte) ([]ikev2.Payload, error) {
 		attrs, err := eap.ParseAttributes(pkt.Data)
 		if err != nil {
 			return nil, err
+		}
+		if attr, ok := attrs[eap.AT_RESULT_IND]; ok && len(attr.Value) != 2 {
+			return nil, errEAPNotification
 		}
 
 		atNonceS, ok1 := attrs[eap.AT_NONCE_S]
@@ -643,6 +675,10 @@ func (s *Session) handleEAP(eapRaw []byte) ([]ikev2.Payload, error) {
 			s.fastReauthCtx = eap.NewFastReauthContext()
 			return nil, ErrReauth
 		}
+		_, resultInd := attrs[eap.AT_RESULT_IND]
+		if resultInd {
+			respData = append(respData, eap.AT_RESULT_IND, 1, 0, 0)
+		}
 
 		respPkt := &eap.EAPPacket{
 			Code:       eap.CodeResponse,
@@ -658,13 +694,9 @@ func (s *Session) handleEAP(eapRaw []byte) ([]ikev2.Payload, error) {
 
 		newKeyMat := crypto.NewFIPS1862PRFSHA1(s.fastReauthCtx.MK).Bytes(nil, 16+16+64)
 		s.MSK = newKeyMat[32:96]
+		s.completedEAPMethod(eap.TypeAKA, s.fastReauthCtx.KAut, resultInd, true, counterVal, s.fastReauthCtx.KEncr)
 		eapPayload := &ikev2.EncryptedPayloadEAP{EAPMessage: eapBytes}
 		return []ikev2.Payload{eapPayload}, nil
-	}
-
-	// EAP-AKA Notification (RFC 4187 §9.3.1；O2 等运营商可能用 subtype 12)
-	if pkt.Type == eap.TypeAKA && s.isAKANotification(pkt) {
-		return s.buildEAPAKANotificationResponse(pkt)
 	}
 
 	// EAP-AKA' Fast Re-authentication is not fully supported.
@@ -672,6 +704,7 @@ func (s *Session) handleEAP(eapRaw []byte) ([]ikev2.Payload, error) {
 	// FastReauthContext only stores MK/K_aut/K_encr; full-auth never caches K_re, and
 	// MK+prf256Plus is not that KDF. Fail closed and keep Type50 Challenge.
 	if pkt.Type == eap.TypeAKAPrime && pkt.Subtype == eap.SubtypeReauthentication {
+		s.akaIdentity.closed = true
 		if s.fastReauthCtx == nil || !s.fastReauthCtx.CanUseReauth() {
 			s.Logger.Warn("收到 EAP-AKA' Re-auth 挑战但本地无缓存假名，回退全量认证")
 			return nil, fmt.Errorf("fast reauth context not available")
@@ -730,90 +763,6 @@ func findEAPAttrOffset(data []byte, attrType uint8) (int, bool) {
 		offset += l
 	}
 	return 0, false
-}
-
-func (s *Session) isAKANotification(pkt *eap.EAPPacket) bool {
-	return pkt != nil && pkt.Type == eap.TypeAKA && pkt.Subtype == eap.SubtypeNotificationAlt
-}
-
-func (s *Session) buildEAPAKANotificationResponse(pkt *eap.EAPPacket) ([]ikev2.Payload, error) {
-	attrs, err := eap.ParseAttributes(pkt.Data)
-	if err != nil {
-		return nil, err
-	}
-	notifCode := uint16(0)
-	if atNotif, ok := attrs[eap.AT_NOTIFICATION]; ok {
-		if len(atNotif.Value) != 2 {
-			return nil, errors.New("EAP-AKA notification 属性长度无效")
-		}
-		notifCode = uint16(atNotif.Value[0])<<8 | uint16(atNotif.Value[1])
-	} else {
-		return nil, errors.New("EAP-AKA notification 缺少 AT_NOTIFICATION")
-	}
-	macRequired := notifCode&0x4000 == 0
-	s.Logger.Info("收到 EAP-AKA Notification",
-		logger.Int("subtype", int(pkt.Subtype)),
-		logger.Int("code", int(notifCode)),
-		logger.Bool("mac_required", macRequired),
-		logger.Bool("success", notifCode&0x8000 != 0))
-
-	// EAP-AKA AT_NOTIFICATION code 0x4000 = P_ANY_ID_REQ：
-	// ePDG 请求客户端提供身份，应回 EAP-AKA Identity 响应（带永久 NAI）
-	// （对齐 vowifi_gateway state_2 的 AT_ANY_ID_REQ 处理：type=AKA(23) + subtype=Identity(5) + AT_IDENTITY）
-	// AT_IDENTITY 的 Value 格式: [2 字节长度][identity]（RFC 4187 §10.8）
-	if notifCode == 0x4000 {
-		s.Logger.Info("P_ANY_ID_REQ 收到，回 EAP-AKA Identity（永久 NAI）")
-		imsi, err := s.cfg.SIM.GetIMSI()
-		if err != nil {
-			return nil, err
-		}
-		identity := buildNAI(imsi, s.cfg)
-		val := make([]byte, 2+len(identity))
-		binary.BigEndian.PutUint16(val[0:2], uint16(len(identity)))
-		copy(val[2:], identity)
-		atIdentity := &eap.Attribute{Type: eap.AT_IDENTITY, Value: val}
-		respPkt := &eap.EAPPacket{
-			Code:       eap.CodeResponse,
-			Identifier: pkt.Identifier,
-			Type:       eap.TypeAKA,
-			Subtype:    eap.SubtypeIdentity,
-			Data:       atIdentity.Encode(),
-		}
-		return []ikev2.Payload{&ikev2.EncryptedPayloadEAP{EAPMessage: respPkt.Encode()}}, nil
-	}
-
-	if macRequired && len(s.eapKAut) == 0 {
-		return nil, errors.New("EAP-AKA notification 需要 MAC，但 K_aut 不可用")
-	}
-
-	respAttrs := []byte{}
-	var macAttrOffset int
-	if macRequired {
-		macAttrOffset = len(respAttrs)
-		respMacAttr := &eap.Attribute{Type: eap.AT_MAC, Value: make([]byte, 18)}
-		respAttrs = append(respAttrs, respMacAttr.Encode()...)
-	}
-
-	respPkt := &eap.EAPPacket{
-		Code:       eap.CodeResponse,
-		Identifier: pkt.Identifier,
-		Type:       eap.TypeAKA,
-		Subtype:    eap.SubtypeNotificationAlt,
-		Data:       respAttrs,
-	}
-	eapBytes := respPkt.Encode()
-
-	if macRequired {
-		macPos := 8 + macAttrOffset + 4
-		if macPos+16 > len(eapBytes) {
-			return nil, errors.New("EAP-AKA notification MAC 偏移越界")
-		}
-		mac := hmac.New(sha1.New, s.eapKAut)
-		mac.Write(eapBytes)
-		copy(eapBytes[macPos:macPos+16], mac.Sum(nil)[:16])
-	}
-
-	return []ikev2.Payload{&ikev2.EncryptedPayloadEAP{EAPMessage: eapBytes}}, nil
 }
 
 func (s *Session) buildEAPSyncFailure(id uint8, auts []byte) ([]ikev2.Payload, error) {

@@ -27,6 +27,7 @@ type akaIdentityState struct {
 func (s *Session) resetAKAIdentity() {
 	s.akaIdentity = akaIdentityState{}
 	s.eapKAut = nil
+	s.eapNotification = eapNotificationState{}
 }
 
 func (s *Session) akaIdentityClientError(id uint8) ([]ikev2.Payload, error) {

@@ -127,6 +127,7 @@ type Session struct {
 	msgBuffer            []byte // 上次发送的消息用于重传 (尚未使用的)
 	MSK                  []byte // 来自 EAP 的主会话密钥
 	eapKAut              []byte // EAP-AKA K_aut，用于 Notification 响应 MAC
+	eapNotification      eapNotificationState
 	akaIdentity          akaIdentityState
 	akaPermanentIdentity bool
 	saInitResp           []byte // RFC 7296 RealMessage2
@@ -460,6 +461,12 @@ func (s *Session) connectOnce() (result error) {
 			}
 			if respEAP != nil {
 				respData, err = s.sendEncryptedWithRetry(respEAP, ikev2.IKE_AUTH)
+				if failure := s.eapNotification.failure; failure != nil {
+					if err != nil {
+						return fmt.Errorf("%w (acknowledgement failed: %v)", failure, err)
+					}
+					return failure
+				}
 				if err != nil {
 					return err
 				}

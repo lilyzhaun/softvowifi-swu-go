@@ -3,7 +3,9 @@ package swu
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/sha1"
+	"encoding/binary"
 	"errors"
 	"net"
 	"testing"
@@ -24,11 +26,15 @@ func TestFragmentConnectCompletesLongIndependentAUTH(t *testing.T) {
 	}
 }
 
+func TestNotificationConnectProtectedSuccessThenAUTH(t *testing.T) {
+	testAKAIdentityAUTH(t, "notification")
+}
+
 func testAKAIdentityAUTH(t *testing.T, layout string) {
 	t.Helper()
 	peer := newAKAWirePeer(t)
 	send := func(payloads []akaWirePayload) {
-		if layout == "unfragmented" {
+		if layout == "unfragmented" || layout == "notification" {
 			peer.send(t, peer.protect(t, payloads))
 			return
 		}
@@ -78,6 +84,19 @@ func testAKAIdentityAUTH(t *testing.T, layout string) {
 	digest := sha1.Sum(append(bytes.Clone(identityReq), identityResp[0].body...))
 	keys := referenceAKAKeys(provider, false)
 	challenge := identityChallenge(t, keys[16:32], append([]byte{134, 6, 0, 0}, digest[:]...))
+	if layout == "notification" {
+		challenge = append(challenge, 135, 1, 0, 0)
+		binary.BigEndian.PutUint16(challenge[2:4], uint16(len(challenge)))
+		for offset := 8; offset < len(challenge); offset += int(challenge[offset+1]) * 4 {
+			if challenge[offset] == 11 {
+				clear(challenge[offset+4 : offset+20])
+				m := hmac.New(sha1.New, keys[16:32])
+				m.Write(challenge)
+				copy(challenge[offset+4:offset+20], m.Sum(nil)[:16])
+				break
+			}
+		}
+	}
 	send([]akaWirePayload{{kind: 48, body: challenge}})
 	response := peer.decrypt(t, peer.receive(t))
 	if len(response) != 1 || response[0].body[5] != 1 {
@@ -86,9 +105,19 @@ func testAKAIdentityAUTH(t *testing.T, layout string) {
 	if err := verifyAKAWireMAC(response[0].body, keys[16:32]); err != nil {
 		t.Fatal(err)
 	}
+	successID := byte(0xce)
+	if layout == "notification" {
+		send([]akaWirePayload{{kind: 48, body: notificationWire(0x8000, keys[16:32])}})
+		ack := peer.decrypt(t, peer.receive(t))
+		if len(ack) != 1 || ack[0].kind != 48 {
+			t.Fatal("normal Connect did not ACK protected success")
+		}
+		notificationACK(t, []ikev2.Payload{&ikev2.EncryptedPayloadEAP{EAPMessage: ack[0].body}}, keys[16:32])
+		successID = 0x87
+	}
 	idrBody := append([]byte{2, 0, 0, 0}, []byte(testIDrFQDN)...)
 	send([]akaWirePayload{
-		{kind: 36, body: idrBody}, {kind: 48, body: []byte{3, 0xce, 0, 4}},
+		{kind: 36, body: idrBody}, {kind: 48, body: []byte{3, successID, 0, 4}},
 	})
 	authPayloads := peer.decrypt(t, peer.receive(t))
 	if len(authPayloads) != 1 || authPayloads[0].kind != 39 || len(authPayloads[0].body) != 36 || authPayloads[0].body[0] != 2 {
@@ -116,7 +145,7 @@ func testAKAIdentityAUTH(t *testing.T, layout string) {
 		{kind: 44, body: []byte{1, 0, 0, 0, 7, 0, 0, 16, 0, 0, 255, 255, 192, 0, 2, 10, 192, 0, 2, 10}},
 		{kind: 45, body: []byte{1, 0, 0, 0, 7, 0, 0, 16, 0, 0, 255, 255, 0, 0, 0, 0, 255, 255, 255, 255}},
 	}
-	if layout != "unfragmented" {
+	if layout != "unfragmented" && layout != "notification" {
 		final = append(final, akaWirePayload{kind: 41, body: independentNotifyBody(16432, bytes.Repeat([]byte{0x71}, 3000))})
 	}
 	send(final)
