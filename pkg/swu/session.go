@@ -9,6 +9,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/1239t/swu-go/pkg/crypto"
@@ -129,6 +130,7 @@ type Session struct {
 	eapKAut              []byte // EAP-AKA K_aut，用于 Notification 响应 MAC
 	eapNotification      eapNotificationState
 	akaPrime             akaPrimeState
+	xfrmOutputMark       uint32
 	akaIdentity          akaIdentityState
 	akaPermanentIdentity bool
 	saInitResp           []byte // RFC 7296 RealMessage2
@@ -292,6 +294,7 @@ func (s *Session) connectOnce() (result error) {
 	handshakeStart := time.Now()
 	var err error
 	s.MSK = nil
+	s.xfrmOutputMark = 0
 	s.resetAKAIdentity()
 	s.resetIKEAuthTranscripts()
 
@@ -304,7 +307,7 @@ func (s *Session) connectOnce() (result error) {
 
 	// 1. 设置网络 (Socket)
 	localPort := s.cfg.LocalPort
-	localBind := fmt.Sprintf("%s:%d", s.cfg.LocalAddr, localPort)
+	localBind := net.JoinHostPort(s.cfg.LocalAddr, fmt.Sprint(localPort))
 	remotePort := s.cfg.EpDGPort
 	if remotePort == 0 {
 		remotePort = 500
@@ -314,10 +317,10 @@ func (s *Session) connectOnce() (result error) {
 	if s.cfg.TransportFactory != nil {
 		s.socket, err = s.cfg.TransportFactory(localBind, remoteAddr)
 	} else {
-		s.socket, err = ipsec.NewSocketManager(localBind, remoteAddr, s.cfg.DNSServer)
-		if err != nil && localPort != 0 {
-			localBind = fmt.Sprintf("%s:%d", s.cfg.LocalAddr, 0)
-			s.socket, err = ipsec.NewSocketManager(localBind, remoteAddr, s.cfg.DNSServer)
+		s.socket, err = ipsec.NewSocketManagerWithControl(s.ctx, localBind, remoteAddr, s.cfg.DNSServer, s.cfg.SocketControl)
+		if err != nil && localPort != 0 && errors.Is(err, syscall.EADDRINUSE) {
+			localBind = net.JoinHostPort(s.cfg.LocalAddr, "0")
+			s.socket, err = ipsec.NewSocketManagerWithControl(s.ctx, localBind, remoteAddr, s.cfg.DNSServer, s.cfg.SocketControl)
 		}
 	}
 	if err != nil {
@@ -1081,6 +1084,13 @@ func (s *Session) setupXFRMDataPlane() error {
 		remoteIP = sm.RemoteIP()
 		localPort = int(sm.LocalPort())
 		remotePort = sm.RemotePort()
+		if s.cfg.SocketControl != nil {
+			var err error
+			s.xfrmOutputMark, err = sm.OutputMark()
+			if err != nil {
+				return fmt.Errorf("read selected-network output mark: %w", err)
+			}
+		}
 
 		// 如果绑定的是 0.0.0.0，需要探测实际出口 IP 用于 SA Src
 		if localIP.IsUnspecified() {
@@ -1160,6 +1170,7 @@ func (s *Session) setupXFRMDataPlane() error {
 
 	// 出站 SA (本端 → ePDG)
 	outSACfg := driver.XFRMSAConfig{
+		OutputMark:    s.xfrmOutputMark,
 		Src:           localIP,
 		Dst:           remoteIP,
 		SPI:           s.ChildSAOut.SPI,

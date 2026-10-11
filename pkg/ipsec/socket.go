@@ -42,6 +42,21 @@ func (s *SocketManager) IKEPackets() <-chan []byte {
 	return s.IKEChan
 }
 
+func (s *SocketManager) OutputMark() (uint32, error) {
+	raw, err := s.Conn.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+	var mark int
+	var socketErr error
+	if err := raw.Control(func(fd uintptr) {
+		mark, socketErr = syscall.GetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_MARK)
+	}); err != nil {
+		return 0, err
+	}
+	return uint32(mark), socketErr
+}
+
 // IKEEnvelope carries an uncommitted source through the validation boundary.
 type IKEEnvelope struct {
 	Data []byte
@@ -98,7 +113,16 @@ func (s *SocketManager) NetEventsChan() <-chan NetEvent {
 }
 
 func NewSocketManager(local, remote string, dnsServer string) (*SocketManager, error) {
-	rAddr, remoteIPs, err := resolveUDPAddrAll(remote, dnsServer)
+	return NewSocketManagerWithControl(context.Background(), local, remote, dnsServer, nil)
+}
+
+func NewSocketManagerWithControl(ctx context.Context, local, remote, dnsServer string, control func(string, string, syscall.RawConn) error) (*SocketManager, error) {
+	localHost, _, err := net.SplitHostPort(local)
+	if err != nil {
+		return nil, err
+	}
+	localIP := net.ParseIP(localHost)
+	rAddr, remoteIPs, err := resolveUDPAddrAllControlled(ctx, remote, dnsServer, localIP, control)
 	if err != nil {
 		return nil, err
 	}
@@ -116,10 +140,12 @@ func NewSocketManager(local, remote string, dnsServer string) (*SocketManager, e
 		return nil, err
 	}
 
-	conn, err := net.ListenUDP(network, lAddr)
+	listener := net.ListenConfig{Control: control}
+	packet, err := listener.ListenPacket(ctx, network, lAddr.String())
 	if err != nil {
 		return nil, err
 	}
+	conn := packet.(*net.UDPConn)
 
 	if actual, ok := conn.LocalAddr().(*net.UDPAddr); ok {
 		lAddr = actual
@@ -139,7 +165,20 @@ func NewSocketManager(local, remote string, dnsServer string) (*SocketManager, e
 }
 
 func resolveUDPAddrAll(addr string, dnsServer string) (*net.UDPAddr, []net.IP, error) {
+	return resolveUDPAddrAllControlled(context.Background(), addr, dnsServer, nil, nil)
+}
+
+func resolveUDPAddrAllControlled(parent context.Context, addr, dnsServer string, localIP net.IP, control func(string, string, syscall.RawConn) error) (*net.UDPAddr, []net.IP, error) {
 	if dnsServer == "" {
+		if control != nil {
+			host, _, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, nil, err
+			}
+			if net.ParseIP(host) == nil {
+				return nil, nil, errors.New("selected network requires an explicit DNS endpoint")
+			}
+		}
 		r, err := net.ResolveUDPAddr("udp", addr)
 		if err != nil {
 			return nil, nil, err
@@ -148,11 +187,6 @@ func resolveUDPAddrAll(addr string, dnsServer string) (*net.UDPAddr, []net.IP, e
 			return r, []net.IP{r.IP}, nil
 		}
 		return r, nil, nil
-	}
-
-	if dnsServer == "" {
-		r, err := net.ResolveUDPAddr("udp", addr)
-		return r, nil, err
 	}
 
 	host, portStr, err := net.SplitHostPort(addr)
@@ -171,11 +205,18 @@ func resolveUDPAddrAll(addr string, dnsServer string) (*net.UDPAddr, []net.IP, e
 	res := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-			d := net.Dialer{}
-			return d.DialContext(ctx, "udp", dnsServer)
+			d := net.Dialer{Control: control}
+			if control != nil && localIP != nil && !localIP.IsUnspecified() {
+				if network == "tcp" {
+					d.LocalAddr = &net.TCPAddr{IP: localIP}
+				} else {
+					d.LocalAddr = &net.UDPAddr{IP: localIP}
+				}
+			}
+			return d.DialContext(ctx, network, dnsServer)
 		},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 	defer cancel()
 
 	ips, err := res.LookupIPAddr(ctx, host)
@@ -191,13 +232,19 @@ func resolveUDPAddrAll(addr string, dnsServer string) (*net.UDPAddr, []net.IP, e
 		if cand.IP == nil {
 			continue
 		}
+		if localIP != nil && !localIP.IsUnspecified() && (localIP.To4() != nil) != (cand.IP.To4() != nil) {
+			continue
+		}
 		remoteIPs = append(remoteIPs, cand.IP)
+	}
+	if len(remoteIPs) == 0 {
+		return nil, nil, errors.New("DNS returned no address matching selected local network family")
 	}
 
 	ip := remoteIPs[0]
-	for _, cand := range ips {
-		if cand.IP.To4() != nil {
-			ip = cand.IP
+	for _, cand := range remoteIPs {
+		if cand.To4() != nil {
+			ip = cand
 			break
 		}
 	}

@@ -40,6 +40,9 @@ type XFRMSAConfig struct {
 
 	// Reqid associates state with nested policy templates (0 = unset / outer).
 	Reqid int
+	// OutputMark is the platform mark read from the bound outer socket. It
+	// routes encrypted output only, never changes the state lookup identity.
+	OutputMark uint32
 
 	TimeLimitSoft uint64
 	TimeLimitHard uint64

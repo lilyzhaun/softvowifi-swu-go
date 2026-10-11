@@ -29,7 +29,8 @@ func (s *Session) rekeyXFRM(ops childRekeyXFRMOps, next childSARekey, old [2]uin
 	localIP, remoteIP := s.xfrmLocalIP, s.xfrmRemoteIP
 	isAEAD := driver.IsAEADAlgorithm(next.encrID)
 	out := driver.XFRMSAConfig{
-		Src: localIP, Dst: remoteIP, SPI: next.out.SPI,
+		OutputMark: s.xfrmOutputMark,
+		Src:        localIP, Dst: remoteIP, SPI: next.out.SPI,
 		Proto: netlink.XFRM_PROTO_ESP, Mode: netlink.XFRM_MODE_TUNNEL,
 		IsAEAD: isAEAD, EncapType: netlink.XFRM_ENCAP_ESPINUDP,
 		EncapSrcPort: s.xfrmLocalPort, EncapDstPort: s.xfrmRemotePort,
