@@ -1,7 +1,7 @@
 package swu
 
 import (
-	"encoding/binary"
+	"errors"
 	"fmt"
 
 	"github.com/1239t/swu-go/pkg/ikev2"
@@ -15,7 +15,7 @@ const (
 	NotifyNoEpdgAvailable uint16 = 9000
 	// EPDG_NON_ALLOWED - ePDG 不允许访问
 	NotifyEpdgNonAllowed uint16 = 9001
-	// NO_ALTERNATIVE_EPDG_AVAILABLE - 无替代 ePDG
+	// Legacy API name for 9002 (NO_APN_SUBSCRIPTION); numeric value retained.
 	NotifyNoAlternativeEpdg uint16 = 9002
 	// P_CSCF_RESELECTION_SUPPORTED - P-CSCF 重选支持
 	NotifyPCSCFReselection uint16 = 9003
@@ -25,10 +25,12 @@ const (
 	NotifyNoEpdgOtherPlmn uint16 = 11001
 	// USER_UNKNOWN - 用户未知
 	NotifyUserUnknown uint16 = 11011
-	// AUTHENTICATION_FAILED - 认证失败
+	// Legacy API name for 10500 (NETWORK_FAILURE); numeric value retained.
 	NotifyAuthenticationFailed uint16 = 10500
-	// BACKOFF_TIMER - 临时拒绝，携带退避时间（秒，4 字节 data）
-	NotifyBackoffTimer uint16 = 41041
+	// BACKOFF_TIMER - Length(1) followed by GPRS Timer3 value (TS24.302 8.2.9.1).
+	NotifyBackoffTimer      uint16 = 41041
+	NotifyNetworkFailure    uint16 = 10500
+	NotifyNoAPNSubscription uint16 = 9002
 )
 
 // RejectCategory 拒绝分类，决定重试策略
@@ -63,9 +65,15 @@ type RejectError struct {
 	Category RejectCategory
 	// Backoff 退避秒数（仅 Category==RejectBackoff 时有意义）
 	Backoff uint32
+	// BackoffDeactivated means no automatic retry within the current Run,
+	// not a guessed permanent account or subscription failure.
+	BackoffDeactivated bool
 }
 
 func (e *RejectError) Error() string {
+	if e.BackoffDeactivated {
+		return fmt.Sprintf("ePDG BACKOFF_TIMER停用: type=%d，当前运行不自动重试", e.NotifyType)
+	}
 	switch e.Category {
 	case RejectNoRetry:
 		return fmt.Sprintf("ePDG 永久拒绝: type=%d (%s)", e.NotifyType, rejectTypeName(e.NotifyType))
@@ -83,23 +91,41 @@ func (e *RejectError) Error() string {
 func ClassifyReject(notifyType uint16, data []byte) *RejectError {
 	switch notifyType {
 	case NotifyNoEpdgAvailable, NotifyEpdgNonAllowed, NotifyNoAlternativeEpdg,
-		NotifyRefusedByEpdg, NotifyNoEpdgOtherPlmn, NotifyUserUnknown,
-		NotifyAuthenticationFailed:
+		NotifyRefusedByEpdg, NotifyNoEpdgOtherPlmn, NotifyUserUnknown:
 		return &RejectError{NotifyType: notifyType, Category: RejectNoRetry}
 	case NotifyBackoffTimer:
-		backoff := uint32(0)
-		if len(data) >= 4 {
-			backoff = binary.BigEndian.Uint32(data[:4])
+		seconds, deactivated, err := decodeBackoffTimer(data)
+		if err != nil {
+			return &RejectError{NotifyType: notifyType, Category: RejectTransient}
 		}
-		if backoff == 0 {
-			// 无有效退避时间，按临时处理
-			backoff = 60
+		rej := &RejectError{NotifyType: notifyType, Category: RejectBackoff, Backoff: seconds, BackoffDeactivated: deactivated}
+		if deactivated {
+			rej.Category = RejectNoRetry
 		}
-		return &RejectError{NotifyType: notifyType, Category: RejectBackoff, Backoff: backoff}
+		return rej
 	default:
 		// 其他 <16384 错误码：临时错误，指数退避重试
 		return &RejectError{NotifyType: notifyType, Category: RejectTransient}
 	}
+}
+
+var errAuthBackoff = errors.New("invalid or unauthenticated BACKOFF_TIMER")
+
+func decodeBackoffTimer(data []byte) (uint32, bool, error) {
+	if len(data) != 2 || data[0] != 1 {
+		return 0, false, errAuthBackoff
+	}
+	unit, value := data[1]>>5, uint32(data[1]&31)
+	if unit == 7 {
+		return 0, true, nil
+	}
+	// Unit6 is periodic-only (T3312/T3412/T3512 extended), not Tw3;
+	// never reinterpret it as an invented generic 320-hour retry timer.
+	if unit == 6 {
+		return 0, false, errAuthBackoff
+	}
+	seconds := [6]uint32{600, 3600, 36000, 2, 30, 60}
+	return value * seconds[unit], false, nil
 }
 
 func rejectTypeName(t uint16) string {
@@ -109,7 +135,7 @@ func rejectTypeName(t uint16) string {
 	case NotifyEpdgNonAllowed:
 		return "EPDG_NON_ALLOWED"
 	case NotifyNoAlternativeEpdg:
-		return "NO_ALTERNATIVE_EPDG_AVAILABLE"
+		return "NO_APN_SUBSCRIPTION"
 	case NotifyPCSCFReselection:
 		return "P_CSCF_RESELECTION_SUPPORTED"
 	case NotifyRefusedByEpdg:
@@ -119,7 +145,7 @@ func rejectTypeName(t uint16) string {
 	case NotifyUserUnknown:
 		return "USER_UNKNOWN"
 	case NotifyAuthenticationFailed:
-		return "AUTHENTICATION_FAILED"
+		return "NETWORK_FAILURE"
 	case NotifyBackoffTimer:
 		return "BACKOFF_TIMER"
 	}

@@ -949,7 +949,7 @@ func (s *Session) handleIKEAuthFinalParsed(payloads []ikev2.Payload) error {
 	if !ikeAuthHasChildSA(payloads) {
 		// A final error (notably address allocation failure) has no Child SA.
 		// Preserve the rejection instead of asking for another initiator AUTH.
-		if rej := ikeAuthErrorNotify(payloads); rej != nil {
+		if rej := s.ikeAuthErrorNotify(payloads); rej != nil {
 			return rej
 		}
 		if err := s.captureEAPIDr(payloads); err != nil {
@@ -960,6 +960,9 @@ func (s *Session) handleIKEAuthFinalParsed(payloads []ikev2.Payload) error {
 	idrBody, err := s.verifyPostEAPResponderAUTH(payloads)
 	if err != nil {
 		return err
+	}
+	if rej := s.ikeAuthErrorNotify(payloads); rej != nil {
+		return rej
 	}
 	selection, err := s.selectInitialChild(payloads)
 	if err != nil {
@@ -973,15 +976,6 @@ func (s *Session) handleIKEAuthFinalParsed(payloads []ikev2.Payload) error {
 	for _, pl := range payloads {
 		switch p := pl.(type) {
 		case *ikev2.EncryptedPayloadNotify:
-			if p.NotifyType < 16384 {
-				// 3GPP TS 24.302 §7.2.2.2 错误码分类
-				rej := ClassifyReject(p.NotifyType, p.NotifyData)
-				s.Logger.Warn("IKE_AUTH 收到 3GPP 拒绝通知",
-					logger.Int("type", int(p.NotifyType)),
-					logger.String("category", rej.Category.String()),
-					logger.Uint32("backoff", rej.Backoff))
-				return rej
-			}
 			// 打印所有收到的状态类型 Notify，便于调试
 			s.Logger.Debug("IKE_AUTH 收到状态 Notify",
 				logger.Int("type", int(p.NotifyType)),

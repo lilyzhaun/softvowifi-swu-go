@@ -1,7 +1,6 @@
 package swu
 
 import (
-	"encoding/binary"
 	"errors"
 	"testing"
 )
@@ -15,7 +14,6 @@ func TestClassifyRejectNoRetry(t *testing.T) {
 		NotifyRefusedByEpdg,
 		NotifyNoEpdgOtherPlmn,
 		NotifyUserUnknown,
-		NotifyAuthenticationFailed,
 	}
 	for _, code := range noRetryCodes {
 		rej := ClassifyReject(code, nil)
@@ -25,10 +23,18 @@ func TestClassifyRejectNoRetry(t *testing.T) {
 	}
 }
 
+func TestClassifyNetworkFailureIsNotPermanentAuthenticationFailure(t *testing.T) {
+	if NotifyAuthenticationFailed != 10500 || NotifyNetworkFailure != 10500 {
+		t.Fatal("legacy numeric API changed")
+	}
+	if rej := ClassifyReject(10500, nil); rej.Category != RejectTransient {
+		t.Fatal("standard NETWORK_FAILURE was guessed into permanent account/auth rejection")
+	}
+}
+
 // BACKOFF_TIMER 带 data → BACKOFF + 秒数
 func TestClassifyRejectBackoff(t *testing.T) {
-	data := make([]byte, 4)
-	binary.BigEndian.PutUint32(data, 120)
+	data := []byte{1, 0xa2} // 2 * one-minute units, TS24.302/24.008.
 	rej := ClassifyReject(NotifyBackoffTimer, data)
 	if rej.Category != RejectBackoff {
 		t.Fatalf("BACKOFF_TIMER 应分类为 BACKOFF，得到 %s", rej.Category)
@@ -38,14 +44,14 @@ func TestClassifyRejectBackoff(t *testing.T) {
 	}
 }
 
-// BACKOFF_TIMER 无 data → BACKOFF + 默认 60s
+// Missing timer is malformed, never an invented 60-second deadline.
 func TestClassifyRejectBackoffNoData(t *testing.T) {
 	rej := ClassifyReject(NotifyBackoffTimer, nil)
-	if rej.Category != RejectBackoff {
-		t.Fatalf("无 data 的 BACKOFF_TIMER 应分类为 BACKOFF，得到 %s", rej.Category)
+	if rej.Category != RejectTransient {
+		t.Fatalf("malformed timer changed fallback classification: %s", rej.Category)
 	}
-	if rej.Backoff != 60 {
-		t.Fatalf("无 data 的 BACKOFF_TIMER 应默认 60s，得到 %d", rej.Backoff)
+	if rej.Backoff != 0 {
+		t.Fatal("missing timer manufactured a default deadline")
 	}
 }
 
