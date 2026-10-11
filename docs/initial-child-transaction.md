@@ -41,3 +41,15 @@
 没有有效双向族、已分配族地址不匹配、未使用族的坏范围/越原请求或不兼容协议仍拒绝且不提交ticket/Child。初始XFRM只为有效族安装原mandatory ESP模板，IPv6策略失败不再仅告警后伪报可用；后继换钥同样不得重装未分配族。旧双栈重键fixture明确原协商CP/TS前提，原失败传播/回滚/算法/方向断言保留。
 
 本项只约束有效**地址族**，保留既有族内broad XFRM策略形式；任意TS地址/端口的精确内核编译、完整rekey/PFS安全性和自然换钥仍不是本项完成声明，需独立审查。直接合成部分分配正向/无效族负向、初始策略builder、真实换钥安装接口与网络配置入口回归，先5FAIL/6PASS，再swu590PASS；一次全库770PASS/22既有内核opt-in跳过，0FAIL/无race，vet/格式通过。后继主仓真实pin/构建和正常设备路径仍待验证，不能提前把协议修正当运营商恢复。
+
+## 后继：可选DH=NONE与错编号的全新单报价
+
+负责人`lilyzhaun`，基准`8082e15`，分支`fix/threeuk-initial-child-20261011`。只修初始Child选择/请求构造，不放宽认证、ESN、CP/TS、密钥或非零DH/PFS，不更改默认六套和偏好、配置目录或依赖。
+
+- [RFC7296 §1.2](https://www.rfc-editor.org/rfc/rfc7296#section-1.2)允许初始AUTH中的DH=NONE，建议省略该可选子结构；省略DH与显式无属性0保持相同语义。旧数量等同规则误拒这个合法形态，六套独立最终AUTH正向先RED。仅无属性DH0可补充匹配；重复DH、带属性、非零组和未报价类型仍拒绝。ESP mandatory ENCR/ESN、原CBC INTEG与原GCM约束不减。
+- 数量相同不是完整套件匹配；数量不同先保留严格拒绝。网关把原完整提案重新编号1时，`InitialChildProposalNumberError`仍是`errInitialChild`，不安装Child或提交IDr/CP/TS/ticket。仅在responder AUTH及全部最终通知通过、把编号改回后**所有**原SA/CP/TS检查成立且唯一对应原完整报价时给出`OfferedNumber`提示；任意编号、外国算法/属性/TS、坏CP、坏AUTH/通知或歧义无提示。
+- 新`Config.InitialChildProposalNumber`仅供调用者在旧Session彻底清理后构造全新请求：从原六套取唯一完整报价，编号1，原身份/CP/TS/通知保持。0维持默认，越界失败；启用单报价后不再给错号提示。库不自动重连或学习到永久配置，主仓supervisor复用既有一次有界兼容路径，原套件内严格匹配不变。
+- 直接回归包含错号拒绝不提交＋typed提示、坏全事务不得提示、单报价构造与正确编号完整提交、原六套与DH0正/负矩阵。主仓另通过真实loopback UDP独立EAP/MAC/双方AUTH，验证全新SPI/KE/nonce/Child SPI、正常六套→原第6套单报价及第二次不匹配不再次即时换套件；不是运营商或Android验收。
+- 原负向与隐私回归保留，临时诊断只输出公开算法元数据、不进入生产源码。本库不登记私有设备身份、原始通信、配置或制品摘要，主仓候选/设备业务与长期按独立门槛记录。
+
+本切片最终一次全库race/shuffle/count1：967个通过事件、22个既有隔离内核opt-in跳过，6测试包通过/另2包无测试，0FAIL/无race，vet0；直接初始事务/编号矩阵87PASS。此前DH0六套RED、错号提示缺失1FAIL及主仓原supervisor1FAIL完整前置保留。主仓临时源码接线2PASS仅归离线，须后继真实pin/标准模块与获授权设备再验证。

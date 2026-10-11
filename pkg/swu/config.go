@@ -87,4 +87,7 @@ type Config struct {
 	// from that layout, renumbered 1. Zero preserves the original offer. This is
 	// request construction only: it does not relax selection or retry automatically.
 	InitialIKEProposalNumber uint8
+	// InitialChildProposalNumber likewise restricts AUTH1 to one complete
+	// original ESP offer, numbered 1; zero preserves all original offers.
+	InitialChildProposalNumber uint8
 }
