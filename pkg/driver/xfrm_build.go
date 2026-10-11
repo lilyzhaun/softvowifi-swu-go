@@ -28,6 +28,9 @@ func (x *XFRMManager) buildXfrmState(cfg XFRMSAConfig) *netlink.XfrmState {
 			TimeHard: cfg.TimeLimitHard,
 		},
 	}
+	if cfg.OutputMark != 0 {
+		state.OutputMark = &netlink.XfrmMark{Value: cfg.OutputMark, Mask: ^uint32(0)}
+	}
 	if cfg.IsAEAD {
 		state.Aead = &netlink.XfrmStateAlgo{
 			Name: cfg.AeadAlgoName, Key: cfg.AeadKey, ICVLen: cfg.AeadICVLen,

@@ -2,6 +2,7 @@ package swu
 
 import (
 	"net/netip"
+	"syscall"
 
 	"github.com/1239t/swu-go/pkg/sim"
 )
@@ -13,6 +14,9 @@ type Config struct {
 	APN                string
 	LocalAddr          string // 传出接口 IP (通常自动检测)
 	DNSServer          string // 可选: 用于解析 ePDG 域名的 DNS 服务器 (host:port)
+	// SocketControl binds both DNS and the outer UDP/ESP socket before bind or
+	// traffic. A failed selected network never retries without this control.
+	SocketControl func(network, address string, raw syscall.RawConn) error
 
 	SIM          sim.SIMProvider
 	EnableDriver bool // 是否创建 TUN 和路由 (需要 root)

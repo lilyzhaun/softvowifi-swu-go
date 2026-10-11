@@ -94,6 +94,10 @@
 
 基准`b0d1d4b`、分支`fix/a05-aka-prime-kdf`。按RFC5448§3.1/3.2/3.3/3.4.1/AppendixC四组完整公开keys和独立标准HMAC oracle，mandatory/有序KDF/合法协商重复/网络名/AMF与实际Identity先校验，复用标准带seed的`crypto.PrfPlus`；Type50请求/回应MAC、RES/RESULT_IND、同步AUTS/KDF列表与同字节重传/无AKA降级，不缓存成Type23 fast。20FAIL4PASS→GREEN、旧pin正常Connect overlay1FAIL→标准Case1/成功通知/最终AUTH/Child绿色；单次库933PASS22旧opt-in跳过7旧Type50前提FAIL，只补标准mandatory/实际Identity、去skip flag后原坏SIM长度断言保持，另同步后列表1FAIL→最终swu761PASS/vet，不伪报重复全库。无客户端复制/特判/降级，MIT/module/unknown保持；完整Prime Identity/fast/PKI/实卡/长期独立，详见[专题](docs/aka-prime-full-challenge.md)。
 
+### A09：DNS/outer UDP控制与出站平台mark
+
+基准`5bb43ce`、分支`fix/a09-network-binding`。正常Config/Session控制DNS/UDP socket，显式DNS/同族/上下文/错误不default fallback，旧nil保持；从绑定socket读实际SO_MARK，只给出站XFRM OutputMark并贯穿Child rekey，不改变入站/ownership selector。原接口2FAIL→10PASS、输出mark1FAIL→路由/旧回滚22PASS，全库947PASS22旧opt-in跳过/vet。仅Go官方net控制/Linux与现有netlink/原源码，无私有Android mark协议复制/特判/降级，MIT/module/unknown不变；Android来源/丢失/PANI/规范候选及实机仍待主仓接线，见[专题](docs/network-socket-binding.md)。
+
 ## 历史：本地维护跨度（2026-09-15 首导前源码就绪核对）
 
 首次本地导入已经包含 A/B；之后的维护远不止两个修改。以下为可追溯的本地历史分组与测试入口，不是相对纯上游的完整 diff 或逐行法律审查，未找到的首次导入前来源继续 unknown。
