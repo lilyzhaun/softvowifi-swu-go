@@ -33,9 +33,15 @@ func Test_EAPAKA_rejectsInvalidSIMLengths_whenChallengeSucceeds(t *testing.T) {
 				keys := referenceAKAKeys(provider, false)
 				request := referenceChallenge(keys[16:32], false)
 				request[4] = method
+				if method == 50 {
+					request = primeStandardRequest(t, primeStandardVectors[0], false, 1)
+				}
 				original := bytes.Clone(request)
 				log, output := diagnosticLogger()
-				sess := NewSession(&Config{SIM: provider, DisableEAPMACValidation: method == 50}, log)
+				sess := NewSession(&Config{SIM: provider}, log)
+				if method == 50 {
+					sess.akaIdentity.outer = []byte(primePublicIdentity)
+				}
 
 				payloads, err := sess.handleEAP(request)
 
