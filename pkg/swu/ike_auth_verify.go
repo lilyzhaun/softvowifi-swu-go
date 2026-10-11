@@ -147,7 +147,7 @@ func (s *Session) verifyPostEAPResponderAUTH(payloads []ikev2.Payload) ([]byte, 
 }
 
 func (s *Session) processIKEAuthEAPRound(payloads []ikev2.Payload) ([]ikev2.Payload, bool, error) {
-	if rej := ikeAuthErrorNotify(payloads); rej != nil {
+	if rej := s.ikeAuthErrorNotify(payloads); rej != nil {
 		return nil, false, rej
 	}
 	var equipment *ikev2.EncryptedPayloadNotify
@@ -214,17 +214,47 @@ func requirePostEAPMSK(msk []byte) error {
 	return nil
 }
 
-func ikeAuthErrorNotify(payloads []ikev2.Payload) *RejectError {
+func (s *Session) ikeAuthErrorNotify(payloads []ikev2.Payload) error {
+	var rejected *RejectError
+	errorCount := 0
+	var timer *ikev2.EncryptedPayloadNotify
 	for _, pl := range payloads {
 		notify, ok := pl.(*ikev2.EncryptedPayloadNotify)
 		if !ok {
 			continue
 		}
 		if notify.NotifyType < 16384 {
-			return ClassifyReject(notify.NotifyType, notify.NotifyData)
+			errorCount++
+			if rejected == nil {
+				rejected = ClassifyReject(notify.NotifyType, notify.NotifyData)
+			}
+		}
+		if notify.NotifyType == NotifyBackoffTimer {
+			if timer != nil || len(notify.SPI) != 0 || notify.ProtocolID > ikev2.ProtoIKE {
+				return errAuthBackoff
+			}
+			timer = notify
 		}
 	}
-	return nil
+	if timer != nil {
+		seconds, deactivated, err := decodeBackoffTimer(timer.NotifyData)
+		if err != nil || errorCount != 1 || !s.eapNotification.authenticated {
+			return errAuthBackoff
+		}
+		// Permanent errors remain stricter than a finite timer. NO_APN has its
+		// own Tw3 rules; NETWORK_FAILURE is transient, not account rejection.
+		if rejected.Category == RejectNoRetry && rejected.NotifyType != NotifyNoAPNSubscription {
+			return rejected
+		}
+		rejected.Category, rejected.Backoff, rejected.BackoffDeactivated = RejectBackoff, seconds, deactivated
+		if deactivated {
+			rejected.Category = RejectNoRetry
+		}
+	}
+	if rejected == nil {
+		return nil
+	}
+	return rejected
 }
 
 func (s *Session) completePostEAP(respData []byte, sendFinal func([]ikev2.Payload) ([]byte, error)) error {
@@ -251,7 +281,7 @@ func (s *Session) completePostEAP(respData []byte, sendFinal func([]ikev2.Payloa
 func (s *Session) completePostEAPMessage(message *protectedIKEMessage, sendFinal func([]ikev2.Payload) (*protectedIKEMessage, error)) error {
 	payloads := message.payloads
 	s.logIKEAuthMetadata(ikeAuthPhaseEAPLoop, payloads)
-	if rej := ikeAuthErrorNotify(payloads); rej != nil {
+	if rej := s.ikeAuthErrorNotify(payloads); rej != nil {
 		return rej
 	}
 	if err := s.captureEAPIDr(payloads); err != nil {

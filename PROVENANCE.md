@@ -86,6 +86,10 @@
 
 基准`ed8349d`、分支`fix/a07-auth-copayload`。按TS24.302 V18.7.0 §7.2.6/8.2.9.2先验证本轮全部载荷/请求格式，成功方法MAC后统一组合EAP/设备应答；两码/独立与共包一致，早期/错误/重复/无身份拒绝，不制造零身份或SV补零。新矩阵19FAIL3PASS→聚焦60PASS、一次库880PASS22旧opt-in跳过1既有缺口预期FAIL，保留原非法请求/metadata/privacy并加强为拒绝/SIM0/无应答后swu701PASS/vet。无客户端复制/特判/降级，MIT/module/unknown保持；实卡共包/PKI/完整Fast/Prime/长期未追认，详见[专题](docs/auth-round-copayloads.md)。
 
+### A08：AUTH标准timer与错误终态关联
+
+基准`3c279f1`、分支`fix/a08-auth-backoff`。按TS24.302 V18.7.0 §7.2.2/8.2.9.1及TS24.008 V18.5.0 §10.5.7.4a用Length1+GPRS Timer3，单错误/唯一timer/成功方法绑定，零/停用/未知或非法分开；原错误码保留、10500不误猜永久认证失败、9002按Tw3，旧导出数值不改。不新建调度/跨进程屏蔽系统；矩阵27FAIL2PASS→96PASS、全库911PASS22旧opt-in跳过及末次35PASS/vet，主仓旧pin真实factory/UDP/Supervisor5FAIL待新pin。只规范/原源码/Go标准库，MIT/module/unknown不变，无客户端复制/特判/降级；跨进程Tw3/完整错误码/长期未追认，详见[专题](docs/auth-backoff-timers.md)。
+
 ## 历史：本地维护跨度（2026-09-15 首导前源码就绪核对）
 
 首次本地导入已经包含 A/B；之后的维护远不止两个修改。以下为可追溯的本地历史分组与测试入口，不是相对纯上游的完整 diff 或逐行法律审查，未找到的首次导入前来源继续 unknown。
