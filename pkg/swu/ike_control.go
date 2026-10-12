@@ -24,6 +24,7 @@ func (s *Session) ensureIKEDispatcher() {
 }
 
 func (s *Session) startIKEControlLoop() {
+	s.startAuthenticationTimer()
 	s.ikeMu.Lock()
 	s.ikeControlAlive = true
 	s.ikeMu.Unlock()
@@ -138,7 +139,7 @@ func (s *Session) dispatchReceivedIKE(data []byte, commit func() error) {
 	s.recordInboundActivity(time.Now())
 	switch hdr.ExchangeType {
 	case ikev2.INFORMATIONAL:
-		if err := s.handleIncomingInformationalParsed(message.msgID, message.payloads); err != nil {
+		if err := s.handleIncomingInformationalAt(message.msgID, message.payloads, message.receivedAt); err != nil {
 			s.Logger.Warn("处理 INFORMATIONAL 失败", logger.Err(err))
 		}
 	case ikev2.CREATE_CHILD_SA:
@@ -196,14 +197,30 @@ func (s *Session) handleIncomingInformational(data []byte) error {
 	if message == nil {
 		return errFragmentIncomplete
 	}
-	return s.handleIncomingInformationalParsed(message.msgID, message.payloads)
+	return s.handleIncomingInformationalAt(message.msgID, message.payloads, message.receivedAt)
 }
 
 func (s *Session) handleIncomingInformationalParsed(msgID uint32, payloads []ikev2.Payload) error {
+	return s.handleIncomingInformationalAt(msgID, payloads, time.Now())
+}
+
+func (s *Session) handleIncomingInformationalAt(msgID uint32, payloads []ikev2.Payload, received time.Time) error {
+	lifetime, err := authenticatedLifetime(payloads)
+	if err != nil {
+		return err
+	}
+	attempted := false
+	reply := func(payloads []ikev2.Payload) error {
+		attempted = true
+		return s.sendEncryptedResponseWithMsgID(payloads, ikev2.INFORMATIONAL, msgID)
+	}
 
 	var closed SessionDownReason
 	var redirect string
 	defer func() {
+		if closed == "" && attempted && lifetime != nil {
+			s.setAuthLifetime(*lifetime, received, &msgID)
+		}
 		if closed != "" {
 			s.endSession(closed, redirect)
 			if redirect != "" && s.OnRedirect != nil {
@@ -219,14 +236,14 @@ func (s *Session) handleIncomingInformationalParsed(msgID uint32, payloads []ike
 				return errors.New("invalid IKE Delete shape")
 			}
 			closed = SessionDownPeerIKEDelete
-			return s.sendEncryptedResponseWithMsgID(nil, ikev2.INFORMATIONAL, msgID)
+			return reply(nil)
 		}
 	}
 
 	// 没有载荷 = DPD 请求，直接回复空 INFORMATIONAL
 	if len(payloads) == 0 {
 		s.Logger.Debug("收到对端 DPD 请求，回复空 INFORMATIONAL")
-		return s.sendEncryptedResponseWithMsgID(nil, ikev2.INFORMATIONAL, msgID)
+		return reply(nil)
 	}
 
 	for _, pl := range payloads {
@@ -273,8 +290,7 @@ func (s *Session) handleIncomingInformationalParsed(msgID uint32, payloads []ike
 					NotifyType: ikev2.IKEV2_MESSAGE_ID_SYNC,
 					NotifyData: respData,
 				}
-				return s.sendEncryptedResponseWithMsgID(
-					[]ikev2.Payload{syncResp}, ikev2.INFORMATIONAL, msgID)
+				return reply([]ikev2.Payload{syncResp})
 			}
 			// RFC 4555: UPDATE_SA_ADDRESSES — ePDG 地址变更
 			if notify.NotifyType == ikev2.UPDATE_SA_ADDRESSES {
@@ -310,7 +326,7 @@ func (s *Session) handleIncomingInformationalParsed(msgID uint32, payloads []ike
 							}
 						}
 					}
-					return s.sendEncryptedResponseWithMsgID(respPayloads, ikev2.INFORMATIONAL, msgID)
+					return reply(respPayloads)
 				} else {
 					s.Logger.Warn("收到 UPDATE_SA_ADDRESSES 但 MOBIKE 未协商")
 				}
@@ -387,11 +403,11 @@ func (s *Session) handleIncomingInformationalParsed(msgID uint32, payloads []ike
 				NumSPIs:    uint16(len(deletedLocalSPIs)),
 				SPIs:       raw,
 			}
-			return s.sendEncryptedResponseWithMsgID([]ikev2.Payload{delResp}, ikev2.INFORMATIONAL, msgID)
+			return reply([]ikev2.Payload{delResp})
 		}
 	}
 
-	return s.sendEncryptedResponseWithMsgID(nil, ikev2.INFORMATIONAL, msgID)
+	return reply(nil)
 }
 
 func (s *Session) handleIncomingCreateChildSAParsed(msgID uint32, payloads []ikev2.Payload, ops childRekeyXFRMOps) (result error) {

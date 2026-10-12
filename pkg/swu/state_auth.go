@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/1239t/swu-go/pkg/crypto"
 	"github.com/1239t/swu-go/pkg/eap"
@@ -754,6 +755,10 @@ func (s *Session) handleIKEAuthFinalResp(data []byte) error {
 }
 
 func (s *Session) handleIKEAuthFinalParsed(payloads []ikev2.Payload) error {
+	return s.handleIKEAuthFinalAt(payloads, time.Now())
+}
+
+func (s *Session) handleIKEAuthFinalAt(payloads []ikev2.Payload, received time.Time) error {
 	s.logIKEAuthMetadata(ikeAuthPhaseFinal, payloads)
 
 	if s.resumeAuthPending {
@@ -925,6 +930,9 @@ func (s *Session) handleIKEAuthFinalParsed(payloads []ikev2.Payload) error {
 	}
 	s.childOutPolicies = append(s.childOutPolicies, childOutPolicy{saOut: childOut, tsr: s.tsr})
 	s.childMu.Unlock()
+	if seenNotify[ikev2.AUTH_LIFETIME] {
+		s.setAuthLifetime(lifetime, received, nil)
+	}
 
 	if s.ws != nil {
 		s.ws.LogChildSA(s.childSPI, remoteSPI, s.cfg.LocalAddr, s.cfg.EpDGAddr, inEncKey, outEncKey, encrID)
