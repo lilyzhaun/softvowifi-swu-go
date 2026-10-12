@@ -10,6 +10,8 @@ import (
 )
 
 func (s *Session) selectOutgoingSA(packet []byte) *ipsec.SecurityAssociation {
+	s.childMu.RLock()
+	defer s.childMu.RUnlock()
 	if len(s.childOutPolicies) == 0 || s.ChildSAOut == nil {
 		return s.ChildSAOut
 	}
@@ -29,6 +31,21 @@ func (s *Session) selectOutgoingSA(packet []byte) *ipsec.SecurityAssociation {
 	}
 
 	return s.ChildSAOut
+}
+
+func (s *Session) childPair() (*ipsec.SecurityAssociation, *ipsec.SecurityAssociation) {
+	s.childMu.RLock()
+	defer s.childMu.RUnlock()
+	return s.ChildSAIn, s.ChildSAOut
+}
+
+func (s *Session) incomingChild(spi uint32) *ipsec.SecurityAssociation {
+	s.childMu.RLock()
+	defer s.childMu.RUnlock()
+	if hit := s.ChildSAsIn[spi]; hit != nil {
+		return hit
+	}
+	return s.ChildSAIn
 }
 
 func matchSelectors(dstIP net.IP, proto uint8, dstPort uint16, selectors []*ikev2.TrafficSelector) bool {

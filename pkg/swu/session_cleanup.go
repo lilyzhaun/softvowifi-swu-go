@@ -9,6 +9,10 @@ import (
 var ErrCleanup = errors.New("session network cleanup incomplete")
 
 func (s *Session) cleanupNetworkConfig() error {
+	// Complete an in-flight Child installation/rollback before removing the
+	// manager's owned records, so resources cannot reappear after cleanup.
+	s.rekeyMu.Lock()
+	defer s.rekeyMu.Unlock()
 	s.closeNetstackDataplane()
 	if s.xfrmMgr != nil {
 		if err := s.xfrmMgr.CleanupOwned(); err != nil {

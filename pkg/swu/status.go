@@ -18,6 +18,8 @@ type SessionSnapshot struct {
 }
 
 func (s *Session) Snapshot() SessionSnapshot {
+	s.childMu.RLock()
+	defer s.childMu.RUnlock()
 	out := SessionSnapshot{}
 	out.Established = s.ChildSAIn != nil && s.ChildSAOut != nil
 	// 启用了数据平面驱动时

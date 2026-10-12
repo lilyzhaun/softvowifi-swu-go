@@ -252,6 +252,7 @@ func (s *Session) commitChildSARekey(next childSARekey, ops childRekeyXFRMOps) e
 	if err := s.rekeyXFRM(ops, next, [2]uint32{oldOutSPI, oldInSPI}); err != nil {
 		return fmt.Errorf("提交本地 Child SA Rekey 失败: %w", err)
 	}
+	s.childMu.Lock()
 	s.ChildSAOut = newSAOut
 	s.ChildSAIn = newSAIn
 	if s.ChildSAsIn != nil {
@@ -262,6 +263,7 @@ func (s *Session) commitChildSARekey(next childSARekey, ops childRekeyXFRMOps) e
 	} else if len(s.tsr) > 0 {
 		s.childOutPolicies = append(s.childOutPolicies, childOutPolicy{saOut: newSAOut, tsr: s.tsr})
 	}
+	s.childMu.Unlock()
 	if s.ws != nil {
 		s.ws.LogChildSA(newSPI, respSPI, s.cfg.LocalAddr, s.cfg.EpDGAddr, newSAIn.EncryptionKey, newSAOut.EncryptionKey, next.encrID)
 	}

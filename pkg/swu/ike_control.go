@@ -3,11 +3,9 @@ package swu
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"net"
 	"time"
 
-	"github.com/1239t/swu-go/pkg/crypto"
 	"github.com/1239t/swu-go/pkg/ikev2"
 	"github.com/1239t/swu-go/pkg/ipsec"
 	"github.com/1239t/swu-go/pkg/logger"
@@ -59,6 +57,7 @@ func (s *Session) ikeDispatchLoop() {
 		case now := <-ticker.C:
 			s.fragmentBuf.expire(now)
 			s.expireRetiredIKE(now)
+			s.expireRetiredChild(now)
 		case envelope, ok := <-envelopes:
 			if !ok {
 				return
@@ -166,7 +165,11 @@ func (s *Session) dispatchCreateChildSAParsed(msgID uint32, payloads []ikev2.Pay
 	// 该函数会根据 ProtocolID 区分 Child SA Rekey 和 IKE SA Rekey
 	s.Logger.Info("收到 CREATE_CHILD_SA 请求，开始处理",
 		logger.Uint32("msgID", msgID))
-	if err := s.handleIncomingCreateChildSAParsed(msgID, payloads); err != nil {
+	var ops childRekeyXFRMOps
+	if s.xfrmMgr != nil {
+		ops = s.xfrmMgr
+	}
+	if err := s.handleIncomingCreateChildSAParsed(msgID, payloads, ops); err != nil {
 		s.Logger.Warn("处理 CREATE_CHILD_SA 失败", logger.Err(err))
 	} else {
 		s.Logger.Info("Child SA Rekey 处理完成")
@@ -359,6 +362,13 @@ func (s *Session) handleIncomingInformationalParsed(msgID uint32, payloads []ike
 			if s.ChildSAOut != nil && s.ChildSAIn != nil && s.ChildSAOut.SPI == spi && len(deletedLocalSPIs) == 0 {
 				deletedLocalSPIs = append(deletedLocalSPIs, s.ChildSAIn.SPI)
 				closed = SessionDownPeerChildDelete
+			} else if old := s.retiredChild; old != nil && old.out.SPI == spi {
+				if err := s.deleteRetiredChild(); err != nil {
+					s.rekeyMu.Unlock()
+					closed = SessionDownChildRekeyFailed
+					return err
+				}
+				deletedLocalSPIs = append(deletedLocalSPIs, old.in.SPI)
 			}
 		}
 		s.rekeyMu.Unlock()
@@ -384,7 +394,7 @@ func (s *Session) handleIncomingInformationalParsed(msgID uint32, payloads []ike
 	return s.sendEncryptedResponseWithMsgID(nil, ikev2.INFORMATIONAL, msgID)
 }
 
-func (s *Session) handleIncomingCreateChildSAParsed(msgID uint32, payloads []ikev2.Payload) error {
+func (s *Session) handleIncomingCreateChildSAParsed(msgID uint32, payloads []ikev2.Payload, ops childRekeyXFRMOps) (result error) {
 	// Rekey Collision 检测：如果本端正在主动 Rekey（持有 rekeyMu），
 	// 则回复 TEMPORARY_FAILURE 让 ePDG 稍后重试
 	// 参考 strongSwan child_rekey.c 碰撞处理
@@ -397,163 +407,17 @@ func (s *Session) handleIncomingCreateChildSAParsed(msgID uint32, payloads []ike
 		}
 		return s.sendEncryptedResponseWithMsgID([]ikev2.Payload{notify}, ikev2.CREATE_CHILD_SA, msgID)
 	}
-	defer s.rekeyMu.Unlock()
-
-	var reqSA *ikev2.EncryptedPayloadSA
-	var reqNonce []byte
-	var peerSPI uint32
-	var encrID uint16
-	var protoID ikev2.ProtocolID
-	var tsi []*ikev2.TrafficSelector
-	var tsr []*ikev2.TrafficSelector
+	defer func() {
+		s.rekeyMu.Unlock()
+		if errors.Is(result, ErrCleanup) {
+			s.endSession(SessionDownChildRekeyFailed, "")
+		}
+	}()
 
 	for _, pl := range payloads {
-		switch p := pl.(type) {
-		case *ikev2.EncryptedPayloadSA:
-			reqSA = p
-			if len(p.Proposals) > 0 {
-				protoID = p.Proposals[0].ProtocolID
-				if len(p.Proposals[0].SPI) >= 4 {
-					peerSPI = binary.BigEndian.Uint32(p.Proposals[0].SPI)
-				}
-				for _, t := range p.Proposals[0].Transforms {
-					if t.Type == ikev2.TransformTypeEncr {
-						encrID = uint16(t.ID)
-					}
-				}
-			}
-		case *ikev2.EncryptedPayloadNonce:
-			reqNonce = p.NonceData
-		case *ikev2.EncryptedPayloadTS:
-			if p.IsInitiator {
-				tsi = p.TrafficSelectors
-			} else {
-				tsr = p.TrafficSelectors
-			}
-		case *ikev2.EncryptedPayloadNotify:
-			if p.NotifyType < 16384 {
-				return fmt.Errorf("CREATE_CHILD_SA 错误通知: %d", p.NotifyType)
-			}
+		if sa, ok := pl.(*ikev2.EncryptedPayloadSA); ok && len(sa.Proposals) > 0 && sa.Proposals[0].ProtocolID == ikev2.ProtoIKE {
+			return s.handleRekeyIKESARequestLocked(msgID, payloads)
 		}
 	}
-
-	// 检查是否为 IKE SA Rekey (Proto = IKE)
-	if protoID == ikev2.ProtoIKE {
-		return s.handleRekeyIKESARequestLocked(msgID, payloads)
-	}
-
-	if reqSA == nil || len(reqNonce) == 0 || peerSPI == 0 || encrID == 0 {
-		return fmt.Errorf("CREATE_CHILD_SA 请求缺少必要载荷")
-	}
-
-	nr, err := crypto.RandomBytes(32)
-	if err != nil {
-		return err
-	}
-	spiBytes, err := crypto.RandomBytes(4)
-	if err != nil {
-		return err
-	}
-	ourSPI := binary.BigEndian.Uint32(spiBytes)
-
-	var encrKeyLenBits int
-	for _, t := range reqSA.Proposals[0].Transforms {
-		if t.Type == ikev2.TransformTypeEncr {
-			for _, a := range t.Attributes {
-				if a.Type == ikev2.AttributeKeyLength {
-					encrKeyLenBits = int(a.Val)
-				}
-			}
-		}
-	}
-	childEnc, err := crypto.GetEncrypterWithKeyLen(encrID, encrKeyLenBits)
-	if err != nil {
-		return fmt.Errorf("不支持的 Child SA 加密算法: %d", encrID)
-	}
-	keyLen := childEnc.KeySize()
-	saltLen := 4
-	keyMatLen := 2 * (keyLen + saltLen)
-
-	seed := make([]byte, 0, len(reqNonce)+len(nr))
-	seed = append(seed, reqNonce...)
-	seed = append(seed, nr...)
-
-	keyMat, err := crypto.PrfPlus(s.PRFAlg, s.Keys.SK_d, seed, keyMatLen)
-	if err != nil {
-		return err
-	}
-
-	outKey := keyMat[0 : keyLen+saltLen]
-	inKey := keyMat[keyLen+saltLen : 2*(keyLen+saltLen)]
-
-	outSA := ipsec.NewSecurityAssociation(ourSPI, childEnc, outKey, nil)
-	outSA.RemoteSPI = peerSPI
-
-	inSA := ipsec.NewSecurityAssociation(peerSPI, childEnc, inKey, nil)
-	inSA.RemoteSPI = ourSPI
-
-	// 保存旧 SPI 用于内核 SA 替换
-	var oldOutSPI, oldInSPI uint32
-	if s.ChildSAOut != nil {
-		oldOutSPI = s.ChildSAOut.SPI
-	}
-	if s.ChildSAIn != nil {
-		oldInSPI = s.ChildSAIn.SPI
-	}
-
-	// 替换主 SA 引用
-	s.ChildSAOut = outSA
-	s.ChildSAIn = inSA
-	if s.ChildSAsIn != nil {
-		s.ChildSAsIn[peerSPI] = inSA
-	}
-
-	if len(tsr) > 0 {
-		if len(s.childOutPolicies) > 0 {
-			s.childOutPolicies[0].saOut = outSA
-		} else {
-			s.childOutPolicies = append(s.childOutPolicies, childOutPolicy{saOut: outSA, tsr: tsr})
-		}
-	}
-
-	if s.ws != nil {
-		s.ws.LogChildSA(ourSPI, peerSPI, s.cfg.LocalAddr, s.cfg.EpDGAddr, inKey, outKey, encrID)
-	}
-
-	// 更新内核 XFRM SA（XFRMI 模式）
-	if s.xfrmMgr != nil && oldOutSPI != 0 {
-		if err := s.rekeyXFRMSA(oldOutSPI, oldInSPI, outSA, inSA, encrID, encrKeyLenBits); err != nil {
-			s.Logger.Warn("对端 Rekey 后更新内核 XFRM SA 失败", logger.Err(err))
-		}
-	}
-
-	s.Logger.Info("对端 CHILD_SA Rekey 成功",
-		logger.Uint32("oldOutSPI", oldOutSPI),
-		logger.Uint32("newOutSPI", ourSPI),
-		logger.Uint32("peerSPI", peerSPI))
-
-	// 被动 Rekey 成功后，重置冷却期和 Child Rekey Timer
-	s.lastRekeyTime = time.Now()
-	select {
-	case s.childRekeyResetCh <- struct{}{}:
-	default:
-	}
-
-	respProp := ikev2.NewProposal(1, ikev2.ProtoESP, spiBytes)
-	respProp.AddTransform(ikev2.TransformTypeEncr, ikev2.AlgorithmType(encrID), 128)
-	respProp.AddTransform(ikev2.TransformTypeESN, 0, 0)
-	respSA := &ikev2.EncryptedPayloadSA{Proposals: []*ikev2.Proposal{respProp}}
-
-	respNonce := &ikev2.EncryptedPayloadNonce{NonceData: nr}
-
-	var respPayloads []ikev2.Payload
-	respPayloads = append(respPayloads, respSA, respNonce)
-	if len(tsi) > 0 {
-		respPayloads = append(respPayloads, &ikev2.EncryptedPayloadTS{IsInitiator: true, TrafficSelectors: tsi})
-	}
-	if len(tsr) > 0 {
-		respPayloads = append(respPayloads, &ikev2.EncryptedPayloadTS{IsInitiator: false, TrafficSelectors: tsr})
-	}
-
-	return s.sendEncryptedResponseWithMsgID(respPayloads, ikev2.CREATE_CHILD_SA, msgID)
+	return s.handlePeerChildRekey(msgID, payloads, ops)
 }
