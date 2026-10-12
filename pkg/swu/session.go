@@ -118,6 +118,7 @@ type Session struct {
 	// ePDG 通告的 IKE SA 最大生命周期（秒），通过 AUTH_LIFETIME Notify 获取
 	// 0 表示 ePDG 未通告，使用默认的硬编码值
 	authLifetime uint32
+	authExpiry   authenticationExpiry
 
 	childOutPolicies []childOutPolicy
 	xfrmPolicies     []driver.XFRMSPConfig // 缓存所有 XFRM SP（MOBIKE 地址更新时使用）
@@ -266,14 +267,10 @@ func (s *Session) Connect(ctx context.Context) error {
 			return nil
 		}
 
-		// 检查 Reauth 信号
+		// Reauthentication retires this owner; the consumer creates a fresh
+		// Session only after Connect has finished all owned cleanup.
 		if errors.Is(err, ErrReauth) {
-			s.Logger.Info("Reauthentication: 重新开始连接流程")
-			// 重置 Redirect 计数，因为这是全新的连接尝试
-			redirectCount = 0
-			// 不关闭 Socket? connectOnce 已经负责清理了上一轮的资源
-			// 但我们希望保留某些状态吗？不，Reauth 是全新的 IKE SA。
-			continue
+			return err
 		}
 
 		// 检查是否是重定向错误
@@ -542,19 +539,9 @@ func (s *Session) connectOnce() (result error) {
 
 	s.startIKEControlLoop()
 
-	// 计算 Rekey 间隔：如果 ePDG 通告了 AUTH_LIFETIME，动态调整
+	// Key rotation is independent of the peer's authentication deadline.
 	ikeInterval := time.Duration(ikeRekeyInterval) * time.Second
 	childInterval := time.Duration(childRekeyInterval) * time.Second
-	if s.authLifetime > 0 {
-		// IKE Rekey 间隔 = AUTH_LIFETIME 的 80%，在 ePDG 强制删除前完成
-		ikeInterval = time.Duration(float64(s.authLifetime)*0.8) * time.Second
-		// Child Rekey 间隔 = AUTH_LIFETIME 的 87.5%，在 IKE Rekey 前先刷新 ESP
-		childInterval = time.Duration(float64(s.authLifetime)*0.875) * time.Second
-		s.Logger.Info("根据 AUTH_LIFETIME 动态调整 Rekey 间隔",
-			logger.Uint32("authLifetime", s.authLifetime),
-			logger.Duration("ikeRekey", ikeInterval),
-			logger.Duration("childRekey", childInterval))
-	}
 
 	// 启动 IKE SA 生命周期管理：定时触发 IKE SA Rekey
 	s.startIKESARekeyTimer(ikeInterval)
@@ -577,26 +564,17 @@ func (s *Session) connectOnce() (result error) {
 		s.Logger.Info("收到关闭信号，正在清理")
 	case <-s.reauthTrigger:
 		s.Logger.Info("触发 IKE Reauthentication，正在断开旧连接")
-		// 发送 Delete 通知
-		if err := s.sendDeleteIKE(); err != nil {
-			s.Logger.Warn("发送 Delete 通知失败", logger.Err(err))
-		}
-		// 返回 ErrReauth 信号
-		err = ErrReauth
+		s.endSession(SessionDownReauthentication, "")
 	}
 
 	var closed *SessionClosedError
 	peerDeleted := errors.As(context.Cause(s.ctx), &closed) && closed.Reason == SessionDownPeerIKEDelete
-	if err != ErrReauth && !peerDeleted {
-		// 仅在非 Reauth（正常关闭）时发送 Delete
+	if !peerDeleted {
 		if err := s.sendDeleteIKE(); err != nil {
 			s.Logger.Warn("发送 Delete 通知失败", logger.Err(err))
 		}
 	}
 
-	if err == ErrReauth {
-		return err
-	}
 	return context.Cause(s.ctx)
 }
 
@@ -607,26 +585,6 @@ func (s *Session) Reauthenticate() {
 	case s.reauthTrigger <- struct{}{}:
 	default:
 	}
-}
-
-func (s *Session) startIKEReauthTimer(interval time.Duration) {
-	s.Logger.Info("启动 IKE SA Reauth 定时器", logger.Duration("interval", interval))
-	go func() {
-		// 添加抖动 (0-10%)
-		jitter := time.Duration(rand.Int63n(int64(interval / 10)))
-		timer := time.NewTimer(interval + jitter)
-		defer timer.Stop()
-
-		for {
-			select {
-			case <-s.ctx.Done():
-				return
-			case <-timer.C:
-				s.Reauthenticate()
-				return
-			}
-		}
-	}()
 }
 
 // WaitDone 阻塞等待 Session 清理完成（Run 返回前的 cleanup 执行完毕）

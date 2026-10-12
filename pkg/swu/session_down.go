@@ -12,6 +12,9 @@ type SessionClosedError struct {
 
 func (e *SessionClosedError) Error() string { return "session closed: " + string(e.Reason) }
 func (e *SessionClosedError) Unwrap() error { return context.Canceled }
+func (e *SessionClosedError) Is(target error) bool {
+	return target == ErrReauth && e.Reason == SessionDownReauthentication
+}
 
 type SessionDownReason string
 
@@ -25,6 +28,7 @@ const (
 	SessionDownDPDFailed               SessionDownReason = "dpd_failed"
 	SessionDownPeerIKEDelete           SessionDownReason = "peer_ike_delete"
 	SessionDownPeerChildDelete         SessionDownReason = "peer_child_delete"
+	SessionDownReauthentication        SessionDownReason = "reauthentication"
 	SessionDownKernelHardExpire        SessionDownReason = "kernel_hard_expire"
 	SessionDownRedirect                SessionDownReason = "redirect"
 	SessionDownLocalCancel             SessionDownReason = "local_cancel"
@@ -44,6 +48,7 @@ func ParseSessionDownReason(raw string) SessionDownReason {
 		SessionDownDPDFailed,
 		SessionDownPeerIKEDelete,
 		SessionDownPeerChildDelete,
+		SessionDownReauthentication,
 		SessionDownKernelHardExpire,
 		SessionDownRedirect,
 		SessionDownLocalCancel,

@@ -14,9 +14,10 @@ import (
 // The dispatcher hands this owned, fully authenticated message to consumers.
 // A nil message means that a valid fragment is still awaiting its siblings.
 type protectedIKEMessage struct {
-	msgID    uint32
-	payloads []ikev2.Payload
-	fragment *fragmentKey
+	receivedAt time.Time
+	msgID      uint32
+	payloads   []ikev2.Payload
+	fragment   *fragmentKey
 }
 
 var errFragmentIncomplete = errors.New("incomplete protected IKE message")
@@ -70,7 +71,7 @@ func (s *Session) decodeProtectedIKE(data []byte) (*protectedIKEMessage, error) 
 		if err != nil {
 			return nil, err
 		}
-		return &protectedIKEMessage{msgID: msgID, payloads: payloads, fragment: &key}, nil
+		return &protectedIKEMessage{receivedAt: time.Now(), msgID: msgID, payloads: payloads, fragment: &key}, nil
 	}
 
 	// 处理 SK 载荷
@@ -134,7 +135,7 @@ func (s *Session) decodeProtectedIKE(data []byte) (*protectedIKEMessage, error) 
 	if err != nil {
 		return nil, err
 	}
-	return &protectedIKEMessage{msgID: header.MessageID, payloads: payloads}, nil
+	return &protectedIKEMessage{receivedAt: time.Now(), msgID: header.MessageID, payloads: payloads}, nil
 }
 
 func (s *Session) parsePayloads(data []byte, firstType ikev2.PayloadType) ([]ikev2.Payload, error) {
