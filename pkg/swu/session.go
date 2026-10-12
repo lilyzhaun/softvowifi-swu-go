@@ -108,7 +108,8 @@ type Session struct {
 	// Rekey 互斥锁（防止两个 SPI 的 expire 同时触发）
 	rekeyMu sync.Mutex
 	// 上次成功 Rekey 的时间（用于冷却期去重）
-	lastRekeyTime time.Time
+	lastRekeyTime      time.Time
+	lastChildRekeyTime time.Time
 	// IKE SA Rekey 成功后通知 Timer 重置的 channel
 	rekeyResetCh chan struct{}
 	// Child SA Rekey 成功后通知 Timer 重置的 channel

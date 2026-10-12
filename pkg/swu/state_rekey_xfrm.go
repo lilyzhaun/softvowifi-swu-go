@@ -19,7 +19,9 @@ type childRekeyXFRMOps interface {
 type childSARekey struct {
 	out, in *ipsec.SecurityAssociation
 	encrID  uint16
+	integID uint16
 	keyBits int
+	esn     bool
 }
 
 func (s *Session) childRekeyXFRMConfigs(next childSARekey) (out, in driver.XFRMSAConfig, policies []driver.XFRMSPConfig, err error) {
@@ -32,7 +34,7 @@ func (s *Session) childRekeyXFRMConfigs(next childSARekey) (out, in driver.XFRMS
 		IsAEAD: isAEAD, EncapType: netlink.XFRM_ENCAP_ESPINUDP,
 		EncapSrcPort: s.xfrmLocalPort, EncapDstPort: s.xfrmRemotePort,
 		Ifid: s.xfrmIfID, ReplayWindow: s.cfg.ReplayWindow,
-		SADir: netlink.XFRM_SA_DIR_OUT, ESN: s.childESN,
+		SADir: netlink.XFRM_SA_DIR_OUT, ESN: next.esn,
 	}
 	in = driver.XFRMSAConfig{
 		Src: remoteIP, Dst: localIP, SPI: next.in.SPI,
@@ -40,7 +42,7 @@ func (s *Session) childRekeyXFRMConfigs(next childSARekey) (out, in driver.XFRMS
 		IsAEAD: isAEAD, EncapType: netlink.XFRM_ENCAP_ESPINUDP,
 		EncapSrcPort: s.xfrmRemotePort, EncapDstPort: s.xfrmLocalPort,
 		Ifid: s.xfrmIfID, ReplayWindow: s.cfg.ReplayWindow,
-		SADir: netlink.XFRM_SA_DIR_IN, ESN: s.childESN,
+		SADir: netlink.XFRM_SA_DIR_IN, ESN: next.esn,
 	}
 	if isAEAD {
 		info, err := driver.IKEv2AlgToXFRMAead(next.encrID, next.keyBits)
@@ -57,15 +59,13 @@ func (s *Session) childRekeyXFRMConfigs(next childSARekey) (out, in driver.XFRMS
 		}
 		out.CryptAlgoName, in.CryptAlgoName = info.Name, info.Name
 		out.CryptKey, in.CryptKey = next.out.EncryptionKey, next.in.EncryptionKey
-		if s.childIntegID != 0 {
-			auth, err := driver.IKEv2AlgToXFRMAuth(s.childIntegID)
-			if err != nil {
-				return out, in, nil, fmt.Errorf("Rekey 映射完整性算法失败: %w", err)
-			}
-			out.AuthAlgoName, in.AuthAlgoName = auth.Name, auth.Name
-			out.AuthKey, in.AuthKey = next.out.IntegrityKey, next.in.IntegrityKey
-			out.AuthTruncLen, in.AuthTruncLen = auth.TruncateBits, auth.TruncateBits
+		auth, err := driver.IKEv2AlgToXFRMAuth(next.integID)
+		if err != nil {
+			return out, in, nil, fmt.Errorf("Rekey 映射完整性算法失败: %w", err)
 		}
+		out.AuthAlgoName, in.AuthAlgoName = auth.Name, auth.Name
+		out.AuthKey, in.AuthKey = next.out.IntegrityKey, next.in.IntegrityKey
+		out.AuthTruncLen, in.AuthTruncLen = auth.TruncateBits, auth.TruncateBits
 	}
 	networks := s.childPolicyNetworks()
 	if len(networks) == 0 {

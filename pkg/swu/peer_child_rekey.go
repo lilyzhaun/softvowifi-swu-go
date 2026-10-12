@@ -94,7 +94,7 @@ func (s *Session) handlePeerChildRekey(mid uint32, payloads []ikev2.Payload, ops
 	s.ChildSAsIn[localSPI] = next.in
 	s.tsi, s.tsr = sel.tsr, sel.tsi
 	s.childOutPolicies = []childOutPolicy{{saOut: next.out, tsr: s.tsr}}
-	s.lastRekeyTime = time.Now()
+	s.lastChildRekeyTime = time.Now()
 	s.childMu.Unlock()
 	s.Logger.Info("对端 CHILD_SA Rekey 成功", logger.Uint32("oldOutSPI", s.retiredChild.out.SPI), logger.Uint32("newOutSPI", next.out.SPI), logger.Uint32("newInSPI", next.in.SPI))
 	select {

@@ -44,5 +44,6 @@ func (s *Session) deriveChildRekey(encr, integ uint16, bits int, ni, nr []byte, 
 	}
 	next.out.RemoteSPI, next.in.RemoteSPI = localSPI, peerSPI
 	next.encrID, next.keyBits = encr, bits
+	next.integID, next.esn = integ, s.childESN
 	return next, nil
 }

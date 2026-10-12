@@ -85,7 +85,7 @@ func rekeyXFRMFixture() (*Session, childSARekey) {
 	return sess, childSARekey{
 		out:    &ipsec.SecurityAssociation{SPI: 201, EncryptionKey: []byte{1}, IntegrityKey: []byte{3}},
 		in:     &ipsec.SecurityAssociation{SPI: 202, EncryptionKey: []byte{2}, IntegrityKey: []byte{4}},
-		encrID: uint16(ikev2.ENCR_AES_CBC), keyBits: 128,
+		encrID: uint16(ikev2.ENCR_AES_CBC), integID: uint16(ikev2.AUTH_HMAC_SHA2_256_128), keyBits: 128, esn: true,
 	}
 }
 
@@ -148,7 +148,7 @@ func TestChildRekeyXFRMMappingFailureBeforeMutation(t *testing.T) {
 			case "encryption":
 				next.encrID = 65535
 			case "integrity":
-				sess.childIntegID = 65535
+				next.integID = 65535
 			}
 
 			err := sess.rekeyXFRM(kernel, next, [2]uint32{101, 102})
