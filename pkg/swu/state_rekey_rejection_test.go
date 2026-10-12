@@ -15,7 +15,7 @@ func TestChildRekeyPreservesState_whenProtectedNotify14(t *testing.T) {
 		esn  bool
 	}{
 		{name: "no_esn"},
-		{name: "esn_and_fallback", esn: true},
+		{name: "unnegotiated_esn_not_advertised", esn: true},
 	} {
 		t.Run(mode.name, func(t *testing.T) {
 			sess, pipe := childRekeySession(t)
@@ -43,21 +43,20 @@ func TestChildRekeyPreservesState_whenProtectedNotify14(t *testing.T) {
 					t.Fatal("request payload decode failed")
 				}
 				sa, ok := payloads[0].(*ikev2.EncryptedPayloadSA)
-				if !ok || len(sa.Proposals) != 2 || len(sa.Proposals[0].SPI) != 4 {
-					t.Fatal("expected two ESP proposals with a four-byte SPI")
+				if !ok || len(sa.Proposals) != 6 || len(sa.Proposals[0].SPI) != 4 {
+					t.Fatal("expected six complete ESP proposals with a four-byte SPI")
 				}
-				cbc := ikev2.NewProposal(1, ikev2.ProtoESP, sa.Proposals[0].SPI)
-				cbc.AddTransformWithKeyLen(ikev2.TransformTypeEncr, ikev2.ENCR_AES_CBC, 128)
-				cbc.AddTransform(ikev2.TransformTypeInteg, ikev2.AUTH_HMAC_SHA2_256_128, 0)
-				gcm := ikev2.NewProposal(2, ikev2.ProtoESP, sa.Proposals[0].SPI)
-				gcm.AddTransformWithKeyLen(ikev2.TransformTypeEncr, ikev2.ENCR_AES_GCM_16, 128)
-				for _, proposal := range []*ikev2.Proposal{cbc, gcm} {
-					if mode.esn {
-						proposal.AddTransform(ikev2.TransformTypeESN, 1, 0)
+				expectedSA := &ikev2.EncryptedPayloadSA{}
+				for number, index := range []int{3, 0, 1, 2, 4, 5} {
+					suite := peerChildSuites[index]
+					proposal := ikev2.NewProposal(uint8(number+1), ikev2.ProtoESP, sa.Proposals[0].SPI)
+					proposal.AddTransformWithKeyLen(ikev2.TransformTypeEncr, ikev2.AlgorithmType(suite.encr), suite.bits)
+					if suite.integ != 0 {
+						proposal.AddTransform(ikev2.TransformTypeInteg, ikev2.AlgorithmType(suite.integ), 0)
 					}
 					proposal.AddTransform(ikev2.TransformTypeESN, 0, 0)
+					expectedSA.Proposals = append(expectedSA.Proposals, proposal)
 				}
-				expectedSA := &ikev2.EncryptedPayloadSA{Proposals: []*ikev2.Proposal{cbc, gcm}}
 				expectedBytes, err := expectedSA.Encode()
 				if err != nil {
 					t.Fatal(err)
@@ -67,7 +66,7 @@ func TestChildRekeyPreservesState_whenProtectedNotify14(t *testing.T) {
 					t.Fatal(err)
 				}
 				if !bytes.Equal(actualBytes, expectedBytes) {
-					t.Error("current CBC/GCM proposal set changed")
+					t.Error("negotiated-first complete proposal set changed")
 				}
 				nonce, ok := payloads[1].(*ikev2.EncryptedPayloadNonce)
 				if !ok || len(nonce.NonceData) != 32 {
@@ -78,7 +77,7 @@ func TestChildRekeyPreservesState_whenProtectedNotify14(t *testing.T) {
 					t.Error("REKEY_SA did not preserve the RFC 7296 inbound old-SPI direction")
 				}
 				tsi, ok := payloads[3].(*ikev2.EncryptedPayloadTS)
-				if !ok || !tsi.IsInitiator || !reflect.DeepEqual(tsi.TrafficSelectors, sess.tsr) {
+				if !ok || !tsi.IsInitiator || !reflect.DeepEqual(tsi.TrafficSelectors, sess.tsi) {
 					t.Error("current initiator traffic selector changed")
 				}
 				tsr, ok := payloads[4].(*ikev2.EncryptedPayloadTS)

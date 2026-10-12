@@ -13,10 +13,11 @@ import (
 )
 
 type childRekeySnapshot struct {
-	out, in  *ipsec.SecurityAssociation
-	inbound  map[uint32]*ipsec.SecurityAssociation
-	policies []childOutPolicy
-	last     time.Time
+	out, in   *ipsec.SecurityAssociation
+	inbound   map[uint32]*ipsec.SecurityAssociation
+	policies  []childOutPolicy
+	last      time.Time
+	lastChild time.Time
 }
 
 func snapshotChildRekey(sess *Session) childRekeySnapshot {
@@ -24,7 +25,7 @@ func snapshotChildRekey(sess *Session) childRekeySnapshot {
 	for spi, sa := range sess.ChildSAsIn {
 		inbound[spi] = sa
 	}
-	return childRekeySnapshot{sess.ChildSAOut, sess.ChildSAIn, inbound, append([]childOutPolicy(nil), sess.childOutPolicies...), sess.lastRekeyTime}
+	return childRekeySnapshot{sess.ChildSAOut, sess.ChildSAIn, inbound, append([]childOutPolicy(nil), sess.childOutPolicies...), sess.lastRekeyTime, sess.lastChildRekeyTime}
 }
 
 func (snap childRekeySnapshot) assertUncommitted(t *testing.T, sess *Session) {
@@ -35,7 +36,7 @@ func (snap childRekeySnapshot) assertUncommitted(t *testing.T, sess *Session) {
 	if !reflect.DeepEqual(sess.ChildSAsIn, snap.inbound) || !reflect.DeepEqual(sess.childOutPolicies, snap.policies) {
 		t.Error("Child SA map/policies changed on failed commit")
 	}
-	if !sess.lastRekeyTime.Equal(snap.last) || len(sess.rekeyResetCh) != 0 || len(sess.childRekeyResetCh) != 0 {
+	if !sess.lastRekeyTime.Equal(snap.last) || !sess.lastChildRekeyTime.Equal(snap.lastChild) || len(sess.rekeyResetCh) != 0 || len(sess.childRekeyResetCh) != 0 {
 		t.Error("failure advanced cooldown/reset")
 	}
 }
@@ -47,7 +48,7 @@ func childRekeySession(t *testing.T) (*Session, *pipeTransport) {
 	sess.cfg.ReplayWindow = settings.cfg.ReplayWindow
 	sess.xfrmLocalIP, sess.xfrmRemoteIP = settings.xfrmLocalIP, settings.xfrmRemoteIP
 	sess.xfrmLocalPort, sess.xfrmRemotePort, sess.xfrmIfID = settings.xfrmLocalPort, settings.xfrmRemotePort, settings.xfrmIfID
-	sess.childIntegID, sess.childESN = settings.childIntegID, settings.childESN
+	sess.childEncrID, sess.childIntegID, sess.childEncrKeyLenBits, sess.childESN = next.encrID, next.integID, next.keyBits, false
 	sess.cpConfig, sess.tsi = settings.cpConfig, settings.tsi
 	sess.ChildSAOut, sess.ChildSAIn = next.out, next.in
 	sess.ChildSAOut.SPI, sess.ChildSAIn.SPI = 101, 102
@@ -55,6 +56,7 @@ func childRekeySession(t *testing.T) (*Session, *pipeTransport) {
 	sess.tsr = settings.tsr
 	sess.childOutPolicies = []childOutPolicy{{saOut: sess.ChildSAOut, tsr: sess.tsr}}
 	sess.lastRekeyTime = time.Unix(1, 0)
+	sess.lastChildRekeyTime = time.Unix(1, 0)
 	sess.rekeyResetCh, sess.childRekeyResetCh = make(chan struct{}, 2), make(chan struct{}, 2)
 	sess.SequenceNumber.Store(1)
 	pipe := &pipeTransport{sent: make(chan []byte, 4)}
@@ -74,17 +76,10 @@ func childRekeySession(t *testing.T) (*Session, *pipeTransport) {
 	return sess, pipe
 }
 
-func exerciseChildRekey(t *testing.T, sess *Session, invoke func() error) error {
+func exerciseChildRekey(t *testing.T, sess *Session, invoke func() error, mutate ...func([]ikev2.Payload) []ikev2.Payload) error {
 	t.Helper()
 	spi := make([]byte, 4)
 	binary.BigEndian.PutUint32(spi, 201)
-	proposal := ikev2.NewProposal(1, ikev2.ProtoESP, spi)
-	proposal.AddTransformWithKeyLen(ikev2.TransformTypeEncr, ikev2.ENCR_AES_CBC, 128)
-	proposal.AddTransform(ikev2.TransformTypeInteg, ikev2.AUTH_HMAC_SHA2_256_128, 0)
-	response := encodeRekeyResponse(t, sess,
-		&ikev2.EncryptedPayloadSA{Proposals: []*ikev2.Proposal{proposal}},
-		&ikev2.EncryptedPayloadNonce{NonceData: make([]byte, 32)},
-	)
 	result := make(chan error, 1)
 	go func() { result <- invoke() }()
 	pipe := sess.socket.(*pipeTransport)
@@ -116,6 +111,45 @@ func exerciseChildRekey(t *testing.T, sess *Session, invoke func() error) error 
 		if !found {
 			t.Fatal("missing REKEY_SA notification")
 		}
+		// Select CBC128/SHA256 from this actual request, not a hard-coded
+		// proposal number, and echo its mandatory ESN/TS preconditions.
+		var selected *ikev2.Proposal
+		var selectors []ikev2.Payload
+		for _, pl := range payloads {
+			switch p := pl.(type) {
+			case *ikev2.EncryptedPayloadSA:
+				for _, candidate := range p.Proposals {
+					var encr, integ uint16
+					bits := 0
+					for _, tr := range candidate.Transforms {
+						if tr.Type == ikev2.TransformTypeEncr {
+							encr = uint16(tr.ID)
+							if len(tr.Attributes) == 1 {
+								bits = int(tr.Attributes[0].Val)
+							}
+						}
+						if tr.Type == ikev2.TransformTypeInteg {
+							integ = uint16(tr.ID)
+						}
+					}
+					if encr == uint16(ikev2.ENCR_AES_CBC) && integ == uint16(ikev2.AUTH_HMAC_SHA2_256_128) && bits == 128 {
+						selected = ikev2.NewProposal(candidate.ProposalNum, ikev2.ProtoESP, spi)
+						selected.Transforms = candidate.Transforms
+						break
+					}
+				}
+			case *ikev2.EncryptedPayloadTS:
+				selectors = append(selectors, p)
+			}
+		}
+		if selected == nil {
+			t.Fatal("actual request did not offer CBC128/SHA256")
+		}
+		responsePayloads := append([]ikev2.Payload{&ikev2.EncryptedPayloadSA{Proposals: []*ikev2.Proposal{selected}}, &ikev2.EncryptedPayloadNonce{NonceData: make([]byte, 32)}}, selectors...)
+		if len(mutate) > 0 {
+			responsePayloads = mutate[0](responsePayloads)
+		}
+		response := encodePeerPacket(t, sess, responsePayloads, ikev2.CREATE_CHILD_SA, header.MessageID, true)
 		if !sess.taskMgr.HandleResponse(header.MessageID, response) {
 			t.Fatal("response was not matched to real request")
 		}
@@ -179,10 +213,10 @@ func TestChildRekeyCallerCommitsOnceOnSuccess(t *testing.T) {
 			if sess.ChildSAOut == snap.out || sess.ChildSAIn == snap.in || sess.ChildSAOut.SPI != 201 {
 				t.Fatal("new Child SAs not committed")
 			}
-			if sess.ChildSAsIn[102] != snap.in || sess.ChildSAsIn[sess.ChildSAIn.SPI] != sess.ChildSAIn || len(sess.ChildSAsIn) != 2 || sess.childOutPolicies[0].saOut != sess.ChildSAOut {
+			if sess.ChildSAsIn[102] != nil || sess.ChildSAsIn[sess.ChildSAIn.SPI] != sess.ChildSAIn || len(sess.ChildSAsIn) != 1 || sess.childOutPolicies[0].saOut != sess.ChildSAOut {
 				t.Error("incorrect inbound map/outbound policy commit")
 			}
-			if !sess.lastRekeyTime.After(snap.last) || len(sess.rekeyResetCh) != 1 || len(sess.childRekeyResetCh) != 0 {
+			if !sess.lastRekeyTime.Equal(snap.last) || !sess.lastChildRekeyTime.After(snap.lastChild) || len(sess.rekeyResetCh) != 0 || len(sess.childRekeyResetCh) != 1 {
 				t.Error("success bookkeeping changed")
 			}
 			select {
@@ -199,11 +233,11 @@ func TestChildRekeyCallerCommitsOnceOnSuccess(t *testing.T) {
 			default:
 				t.Fatal("missing old SA DELETE")
 			}
-			committedAt, operations := sess.lastRekeyTime, len(kernel.calls)
+			committedAt, operations := sess.lastChildRekeyTime, len(kernel.calls)
 			if err := invoke(); err != nil {
 				t.Fatal(err)
 			}
-			if len(pipe.sent) != 0 || len(kernel.calls) != operations || !sess.lastRekeyTime.Equal(committedAt) || len(sess.rekeyResetCh) != 1 {
+			if len(pipe.sent) != 0 || len(kernel.calls) != operations || !sess.lastChildRekeyTime.Equal(committedAt) || len(sess.rekeyResetCh) != 0 || len(sess.childRekeyResetCh) != 1 {
 				t.Error("cooldown repeated successful commit")
 			}
 		})
