@@ -37,6 +37,7 @@ func (s *Session) ikeDispatchLoop() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	defer s.fragmentBuf.clear()
+	defer func() { s.ikeCryptoMu.Lock(); s.retiredIKE = nil; s.ikeCryptoMu.Unlock() }()
 	packets := s.socket.IKEPackets()
 	var envelopes <-chan ipsec.IKEEnvelope
 	var source interface {
@@ -57,6 +58,7 @@ func (s *Session) ikeDispatchLoop() {
 			return
 		case now := <-ticker.C:
 			s.fragmentBuf.expire(now)
+			s.expireRetiredIKE(now)
 		case envelope, ok := <-envelopes:
 			if !ok {
 				return
@@ -76,6 +78,9 @@ func (s *Session) ikeDispatchLoop() {
 func (s *Session) dispatchReceivedIKE(data []byte, commit func() error) {
 	hdr, err := ikev2.DecodeHeader(data)
 	if err != nil {
+		return
+	}
+	if s.dispatchRetiredIKE(hdr, data) {
 		return
 	}
 	if hdr.Flags&ikev2.FlagResponse != 0 {
@@ -430,7 +435,7 @@ func (s *Session) handleIncomingCreateChildSAParsed(msgID uint32, payloads []ike
 
 	// 检查是否为 IKE SA Rekey (Proto = IKE)
 	if protoID == ikev2.ProtoIKE {
-		return s.HandleRekeyIKESARequest(msgID, payloads)
+		return s.handleRekeyIKESARequestLocked(msgID, payloads)
 	}
 
 	if reqSA == nil || len(reqNonce) == 0 || peerSPI == 0 || encrID == 0 {

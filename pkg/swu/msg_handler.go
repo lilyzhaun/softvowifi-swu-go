@@ -33,6 +33,8 @@ func (s *Session) decryptAndParse(data []byte) (uint32, []ikev2.Payload, error) 
 }
 
 func (s *Session) decodeProtectedIKE(data []byte) (*protectedIKEMessage, error) {
+	s.ikeCryptoMu.RLock()
+	defer s.ikeCryptoMu.RUnlock()
 	header, err := s.protectedHeader(data)
 	if err != nil {
 		return nil, err
@@ -204,11 +206,15 @@ func (s *Session) parsePayloads(data []byte, firstType ikev2.PayloadType) ([]ike
 }
 
 func (s *Session) encryptAndWrap(payloads []ikev2.Payload, exchangeType ikev2.ExchangeType, isResponse bool) ([]byte, error) {
+	s.ikeAdmissionMu.RLock()
+	defer s.ikeAdmissionMu.RUnlock()
 	msgID := uint32(s.NextSequenceNumber())
 	return s.encryptAndWrapWithMsgID(payloads, exchangeType, msgID, isResponse)
 }
 
 func (s *Session) encryptAndWrapWithMsgID(payloads []ikev2.Payload, exchangeType ikev2.ExchangeType, msgID uint32, isResponse bool) ([]byte, error) {
+	s.ikeCryptoMu.RLock()
+	defer s.ikeCryptoMu.RUnlock()
 	innerData := []byte{}
 
 	for i, pl := range payloads {
