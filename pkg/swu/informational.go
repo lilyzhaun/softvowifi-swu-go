@@ -10,6 +10,8 @@ import (
 
 // sendDPD 发送 Dead Peer Detection 请求，返回的 err 仅指打包入列错误
 func (s *Session) sendDPD() error {
+	s.rekeyMu.Lock()
+	defer s.rekeyMu.Unlock()
 	s.Logger.Debug("发送 DPD 请求 (通过并发窗口队列)")
 	// 滑动窗口已经接管了超时重试惩罚，这句 send 函数其实就是投信箱拿号过程。
 	_, err := s.sendEncryptedWithRetry(nil, ikev2.INFORMATIONAL)

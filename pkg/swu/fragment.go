@@ -189,6 +189,8 @@ func (fb *fragmentBuffer) processed(key fragmentKey, now time.Time) {
 }
 
 func (s *Session) cacheFragmentReply(exchange ikev2.ExchangeType, mid uint32, packet []byte) {
+	s.ikeCryptoMu.RLock()
+	defer s.ikeCryptoMu.RUnlock()
 	if len(packet) > maxFragmentedPacket {
 		return
 	} // Bound retained network-derived reply bytes.
@@ -219,6 +221,8 @@ func (fb *fragmentBuffer) discardResponse(exchange ikev2.ExchangeType, mid uint3
 // plainInner: 加密前的内部载荷数据 (已序列化的载荷链)
 // 返回多个 SKF 数据包
 func (s *Session) fragmentMessage(payloads []ikev2.Payload, exchangeType ikev2.ExchangeType, msgID uint32) ([][]byte, error) {
+	s.ikeCryptoMu.RLock()
+	defer s.ikeCryptoMu.RUnlock()
 	// 序列化所有载荷
 	innerData := []byte{}
 	for i, pl := range payloads {

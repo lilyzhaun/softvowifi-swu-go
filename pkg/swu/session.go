@@ -40,7 +40,10 @@ type Session struct {
 	// IKE SA 状态
 	SPIi           uint64
 	SPIr           uint64
-	localResponder bool // Role in the current SA, including peer-initiated IKE rekey.
+	localResponder bool         // Role in the current SA, including peer-initiated IKE rekey.
+	ikeAdmissionMu sync.RWMutex // Request construction/enqueue versus generation handoff.
+	ikeCryptoMu    sync.RWMutex // SPI/key/role snapshots used by protected packet codecs.
+	retiredIKE     *retiredIKESA
 	EncAlg         crypto.Encrypter
 	IntegAlg       crypto.IntegrityAlgorithm
 	PRFAlg         crypto.PRF
@@ -982,6 +985,9 @@ func (s *Session) startXFRMExpireMonitor() {
 // Shutdown 优雅关闭会话
 func (s *Session) Shutdown() {
 	s.endSession(SessionDownLocalCancel, "")
+	s.ikeCryptoMu.Lock()
+	s.retiredIKE = nil
+	s.ikeCryptoMu.Unlock()
 	s.fragmentBuf.clear()
 }
 
@@ -1739,6 +1745,32 @@ func (s *Session) sendEncryptedWithRetry(payloads []ikev2.Payload, exchangeType 
 		return nil, errors.New("任务调度器未初始化")
 	}
 
+	request, err := s.enqueueEncryptedRequest(payloads, exchangeType)
+	if err != nil {
+		return nil, err
+	}
+	// Do not hold admission across the peer response or dispatcher callbacks.
+	select {
+	case <-s.ctx.Done():
+		return nil, s.ctx.Err()
+	case resp, ok := <-request.CompletionCh:
+		if !ok || resp == nil {
+			return nil, ErrWindowTimeout
+		}
+		if request.response != nil {
+			return request.response, nil
+		}
+		message, err := s.decodeProtectedIKE(resp)
+		if err == nil && message == nil {
+			err = errFragmentIncomplete
+		}
+		return message, err
+	}
+}
+
+func (s *Session) enqueueEncryptedRequest(payloads []ikev2.Payload, exchangeType ikev2.ExchangeType) (*OutgoingMessage, error) {
+	s.ikeAdmissionMu.RLock()
+	defer s.ikeAdmissionMu.RUnlock()
 	var packets [][]byte
 	var err error
 	// Allocate exactly once. Encryption can interleave another request's
@@ -1775,25 +1807,5 @@ func (s *Session) sendEncryptedWithRetry(payloads []ikev2.Payload, exchangeType 
 
 	s.logSentEAP(payloads)
 	// 统一异步推送进滑动窗口队列（无论被切分成了多少包，TaskManager 的 Retry 会连带全部发射）
-	request := s.taskMgr.enqueueRequest(msgID, exchangeType, payloads, packets)
-
-	// Completion publishes the already authenticated payloads; do not decrypt
-	// the last SKF datagram a second time in the synchronous consumer.
-	select {
-	case <-s.ctx.Done():
-		return nil, s.ctx.Err()
-	case resp, ok := <-request.CompletionCh:
-		if !ok || resp == nil {
-			return nil, ErrWindowTimeout
-		}
-		if request.response != nil {
-			return request.response, nil
-		}
-		// Standalone TaskManager users can omit the Session validator.
-		message, err := s.decodeProtectedIKE(resp)
-		if err == nil && message == nil {
-			err = errFragmentIncomplete
-		}
-		return message, err
-	}
+	return s.taskMgr.enqueueRequest(msgID, exchangeType, payloads, packets), nil
 }

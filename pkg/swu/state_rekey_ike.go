@@ -163,6 +163,8 @@ func (s *Session) handleRekeyIKESARespParsed(payloads []ikev2.Payload, niNonce [
 	}
 
 	// 原子切换 IKE SA 状态（DELETE 发送后再切换）
+	s.ikeAdmissionMu.Lock()
+	s.ikeCryptoMu.Lock()
 	s.SPIi = newSPIi
 	s.SPIr = sel.newSPIr
 	s.Keys = newKeys
@@ -170,6 +172,8 @@ func (s *Session) handleRekeyIKESARespParsed(payloads []ikev2.Payload, niNonce [
 	s.localResponder = false
 	s.SequenceNumber.Store(0)
 	s.DH = newDH
+	s.ikeCryptoMu.Unlock()
+	s.ikeAdmissionMu.Unlock()
 
 	s.Logger.Info("IKE SA Rekey 成功",
 		logger.Uint64("oldSPIi", oldSPIi),
@@ -191,30 +195,30 @@ func (s *Session) handleRekeyIKESARespParsed(payloads []ikev2.Payload, niNonce [
 
 // HandleRekeyIKESARequest 处理对端发起的 IKE SA Rekey 请求
 func (s *Session) HandleRekeyIKESARequest(msgID uint32, payloads []ikev2.Payload) error {
-	s.Logger.Info("收到 IKE SA Rekey 请求")
+	s.rekeyMu.Lock()
+	defer s.rekeyMu.Unlock()
+	return s.handleRekeyIKESARequestLocked(msgID, payloads)
+}
 
-	var reqSA *ikev2.EncryptedPayloadSA
-	var reqNonce []byte
-	var reqKE []byte
-	var peerSPI uint64
-
-	for _, p := range payloads {
-		switch pl := p.(type) {
-		case *ikev2.EncryptedPayloadSA:
-			reqSA = pl
-			if len(pl.Proposals) > 0 && len(pl.Proposals[0].SPI) >= 8 {
-				peerSPI = binary.BigEndian.Uint64(pl.Proposals[0].SPI[:8])
+func (s *Session) handleRekeyIKESARequestLocked(msgID uint32, payloads []ikev2.Payload) error {
+	s.ikeAdmissionMu.Lock()
+	defer s.ikeAdmissionMu.Unlock()
+	if s.ikeRequestsPending() {
+		return s.sendEncryptedResponseWithMsgID([]ikev2.Payload{&ikev2.EncryptedPayloadNotify{NotifyType: ikev2.TEMPORARY_FAILURE}}, ikev2.CREATE_CHILD_SA, msgID)
+	}
+	proposal, reqNonce, reqKE, err := s.selectPeerIKERekey(payloads)
+	if err != nil {
+		var rejected *peerIKERekeyRejection
+		if errors.As(err, &rejected) {
+			n := &ikev2.EncryptedPayloadNotify{NotifyType: rejected.notify}
+			if rejected.notify == ikev2.INVALID_KE_PAYLOAD {
+				n.NotifyData = binary.BigEndian.AppendUint16(nil, s.ikeDHID)
 			}
-		case *ikev2.EncryptedPayloadNonce:
-			reqNonce = pl.NonceData
-		case *ikev2.EncryptedPayloadKE:
-			reqKE = pl.KEData
+			return errors.Join(err, s.sendEncryptedResponseWithMsgID([]ikev2.Payload{n}, ikev2.CREATE_CHILD_SA, msgID))
 		}
+		return err
 	}
-
-	if reqSA == nil || len(reqNonce) == 0 || len(reqKE) == 0 || peerSPI == 0 {
-		return errors.New("IKE SA Rekey 请求缺少必要载荷 (SA/KE/Nonce)")
-	}
+	peerSPI := binary.BigEndian.Uint64(proposal.SPI)
 
 	// 1. 生成新 Nonce
 	myNonce, err := crypto.RandomBytes(32)
@@ -223,7 +227,7 @@ func (s *Session) HandleRekeyIKESARequest(msgID uint32, payloads []ikev2.Payload
 	}
 
 	// 2. 生成新 DH 密钥对
-	newDH, err := crypto.NewDiffieHellman(14)
+	newDH, err := crypto.NewDiffieHellman(s.ikeDHID)
 	if err != nil {
 		return fmt.Errorf("创建 DH 失败: %v", err)
 	}
@@ -245,12 +249,10 @@ func (s *Session) HandleRekeyIKESARequest(msgID uint32, payloads []ikev2.Payload
 
 	// 5. 构建响应载荷
 	// SA Payload (ProtoIKE, SPI = newSPIr)
-	// 简化：直接接受对方提议的算法（假设是常用的且我们支持）
-	// 严格来说应该 match proposal，这里直接构造一个匹配的响应
-	proposal := reqSA.Proposals[0]
+	// Exact selection from the offer, including the negotiated key length.
 	respProp := ikev2.NewProposal(proposal.ProposalNum, ikev2.ProtoIKE, newSPIrBytes)
 	for _, t := range proposal.Transforms {
-		respProp.AddTransform(t.Type, ikev2.AlgorithmType(t.ID), 0) // KeyLen 简化处理
+		respProp.Transforms = append(respProp.Transforms, t)
 	}
 
 	respSA := &ikev2.EncryptedPayloadSA{
@@ -258,39 +260,28 @@ func (s *Session) HandleRekeyIKESARequest(msgID uint32, payloads []ikev2.Payload
 	}
 
 	respKEPayload := &ikev2.EncryptedPayloadKE{
-		DHGroup: ikev2.MODP_2048_bit,
+		DHGroup: ikev2.AlgorithmType(s.ikeDHID),
 		KEData:  newDH.PublicKeyBytes(),
 	}
 
 	respNoncePayload := &ikev2.EncryptedPayloadNonce{NonceData: myNonce}
 
-	// 6. 发送响应 (使用旧密钥加密)
-	respPayloads := []ikev2.Payload{respSA, respNoncePayload, respKEPayload}
-	// 注意：sendEncryptedResponseWithMsgID 使用当前（旧）密钥加密
-	if err := s.sendEncryptedResponseWithMsgID(respPayloads, ikev2.CREATE_CHILD_SA, msgID); err != nil {
-		return fmt.Errorf("发送 IKE SA Rekey 响应失败: %v", err)
-	}
-
-	s.Logger.Info("IKE SA Rekey 响应已发送")
-
-	// 7. 派生新密钥
-	// SKEYSEED = prf(SK_d_old, g^ir_new | Ni | Nr)
-	// Ni = reqNonce, Nr = myNonce
-	// SPIi = peerSPI (对方是 Initiator), SPIr = newSPIr (我是 Responder)
-	oldSKd := make([]byte, len(s.Keys.SK_d))
-	copy(oldSKd, s.Keys.SK_d)
-
-	newKeys, err := s.GenerateIKESARekeyKeys(
-		oldSKd, newDH.SharedKey,
-		reqNonce, myNonce,
-		peerSPI, newSPIr,
-	)
+	// Derive before accepting. All response crypto still uses the old SA.
+	newKeys, err := s.GenerateIKESARekeyKeys(s.Keys.SK_d, newDH.SharedKey, reqNonce, myNonce, peerSPI, newSPIr)
 	if err != nil {
-		return fmt.Errorf("新 IKE SA 密钥派生失败: %v", err)
+		return err
 	}
-
-	// 8. 切换密钥
-	s.rekeyMu.Lock()
+	respPayloads := []ikev2.Payload{respSA, respNoncePayload, respKEPayload}
+	response, err := s.encryptAndWrapWithMsgID(respPayloads, ikev2.CREATE_CHILD_SA, msgID, true)
+	if err != nil {
+		return err
+	}
+	if err := s.socket.SendIKE(response); err != nil {
+		return err
+	}
+	s.cacheFragmentReply(ikev2.CREATE_CHILD_SA, msgID, response)
+	s.ikeCryptoMu.Lock()
+	s.retainIKEForPeerDelete(msgID, payloads, response)
 	s.SPIi = peerSPI
 	s.SPIr = newSPIr
 	s.Keys = newKeys
@@ -299,7 +290,7 @@ func (s *Session) HandleRekeyIKESARequest(msgID uint32, payloads []ikev2.Payload
 	s.SequenceNumber.Store(0)
 	s.DH = newDH
 	s.lastRekeyTime = time.Now()
-	s.rekeyMu.Unlock()
+	s.ikeCryptoMu.Unlock()
 
 	s.Logger.Info("被动 IKE SA Rekey 完成，密钥已更新",
 		logger.Uint64("newSPIi", peerSPI),
