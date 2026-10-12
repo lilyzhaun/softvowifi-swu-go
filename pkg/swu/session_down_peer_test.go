@@ -170,7 +170,7 @@ func encodePeerIKEDelete(t *testing.T, sess *Session) []byte {
 
 func encodePeerRedirect(t *testing.T, sess *Session) []byte {
 	t.Helper()
-	data := append([]byte{ikev2.RedirectGWIPv4}, net.IPv4(192, 0, 2, 1).To4()...)
+	data := append([]byte{ikev2.RedirectGWIPv4, 4}, net.IPv4(192, 0, 2, 1).To4()...)
 	return encodeInformational(t, sess, &ikev2.EncryptedPayloadNotify{
 		NotifyType: ikev2.REDIRECT,
 		NotifyData: data,
