@@ -793,7 +793,11 @@ func (s *Session) handleIKEAuthFinalParsed(payloads []ikev2.Payload) error {
 				logger.Int("dataLen", len(p.NotifyData)))
 			// RFC 4478: AUTH_LIFETIME — ePDG 通告 IKE SA 最大生存时间（秒）
 			if p.NotifyType == ikev2.AUTH_LIFETIME || p.NotifyType == ikev2.MOBIKE_SUPPORTED || p.NotifyType == ikev2.TICKET_OPAQUE || p.NotifyType == ikev2.REDIRECT {
-				if p.ProtocolID != 0 || len(p.SPI) != 0 || seenNotify[p.NotifyType] {
+				// RFC 4478 specifies protocol zero. Some authenticated peers use
+				// IKE/1 for this IKE-wide advisory; accept only that equivalent
+				// scope, without changing the other status-notify rules.
+				ikeLifetime := p.NotifyType == ikev2.AUTH_LIFETIME && p.ProtocolID == ikev2.ProtoIKE
+				if p.ProtocolID != 0 && !ikeLifetime || len(p.SPI) != 0 || seenNotify[p.NotifyType] {
 					return errInitialChild
 				}
 				seenNotify[p.NotifyType] = true
