@@ -194,9 +194,13 @@ func (s *Session) handleIncomingInformational(data []byte) error {
 func (s *Session) handleIncomingInformationalParsed(msgID uint32, payloads []ikev2.Payload) error {
 
 	var closed SessionDownReason
+	var redirect string
 	defer func() {
 		if closed != "" {
-			s.observeClosed(closed)
+			s.endSession(closed, redirect)
+			if redirect != "" && s.OnRedirect != nil {
+				go s.OnRedirect(redirect)
+			}
 		}
 	}()
 
@@ -300,16 +304,11 @@ func (s *Session) handleIncomingInformationalParsed(msgID uint32, payloads []ike
 					s.Logger.Warn("解析运行期 REDIRECT 负载失败", logger.Err(err))
 				} else {
 					s.Logger.Warn("收到 ePDG 下发的代理转移指令 (REDIRECT)，即将断开重连", logger.String("newAddr", addr))
-					if s.OnRedirect != nil {
-						go s.OnRedirect(addr)
-					}
-					if s.OnSessionDown != nil {
-						go s.OnSessionDown()
-					} else if s.cancel != nil {
-						s.cancel()
-					}
 					if closed == "" {
 						closed = SessionDownRedirect
+						if !s.cfg.DiagnosticRemoteIP.IsValid() {
+							redirect = addr
+						}
 					}
 				}
 				continue
@@ -324,11 +323,6 @@ func (s *Session) handleIncomingInformationalParsed(msgID uint32, payloads []ike
 
 		if del.ProtocolID == ikev2.ProtoIKE {
 			s.Logger.Warn("收到 ePDG 发起的 IKE SA Delete，会话即将关闭")
-			if s.OnSessionDown != nil {
-				go s.OnSessionDown()
-			} else if s.cancel != nil {
-				s.cancel()
-			}
 			if closed == "" {
 				closed = SessionDownPeerIKEDelete
 			}

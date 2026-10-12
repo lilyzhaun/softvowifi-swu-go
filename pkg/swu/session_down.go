@@ -2,6 +2,17 @@ package swu
 
 import "context"
 
+// SessionClosedError identifies an established session's terminal event.
+// RedirectTo is set only for a parsed, protected runtime REDIRECT; consumers
+// must create a new Session after cleanup instead of reusing the old SA.
+type SessionClosedError struct {
+	Reason     SessionDownReason
+	RedirectTo string
+}
+
+func (e *SessionClosedError) Error() string { return "session closed: " + string(e.Reason) }
+func (e *SessionClosedError) Unwrap() error { return context.Canceled }
+
 type SessionDownReason string
 
 const (
@@ -57,10 +68,27 @@ func dpdClosedReason(ctx context.Context) SessionDownReason {
 }
 
 func (s *Session) onHardExpire() {
-	if s.OnSessionDown != nil {
-		go s.OnSessionDown()
-	} else if s.cancel != nil {
-		s.cancel()
+	s.endSession(SessionDownKernelHardExpire, "")
+}
+
+// endSession owns cancellation. Observers run after cancellation and outside
+// Once so a blocking or reentrant observer cannot suppress/reenter termination.
+// Protected peer requests call this only after attempting their response.
+func (s *Session) endSession(reason SessionDownReason, redirect string) {
+	first := false
+	s.terminalOnce.Do(func() {
+		first = true
+		if s.cancelCause != nil {
+			s.cancelCause(&SessionClosedError{Reason: reason, RedirectTo: redirect})
+		} else if s.cancel != nil {
+			s.cancel()
+		}
+	})
+	if !first {
+		return
 	}
-	s.observeClosed(SessionDownKernelHardExpire)
+	if reason != SessionDownLocalCancel && s.OnSessionDown != nil {
+		go s.OnSessionDown()
+	}
+	s.observeClosed(reason)
 }

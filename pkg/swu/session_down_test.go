@@ -37,7 +37,7 @@ func Test_ParseSessionDownReason_mapsUnknownToUnknown(t *testing.T) {
 	}
 }
 
-func Test_HardExpire_cancelPolicy_matchesBaselineObservers(t *testing.T) {
+func Test_HardExpire_ownsCancellationWithAllObservers(t *testing.T) {
 	t.Run("no_observer", func(t *testing.T) {
 		sess := newClosedTestSession(t)
 		sess.onHardExpire()
@@ -49,8 +49,8 @@ func Test_HardExpire_cancelPolicy_matchesBaselineObservers(t *testing.T) {
 		sess := newClosedTestSession(t)
 		sess.OnSessionDown = func() {}
 		sess.onHardExpire()
-		if sess.ctx.Err() != nil {
-			t.Fatalf("legacy skip-cancel broken, ctx.Err()=%v", sess.ctx.Err())
+		if !errors.Is(sess.ctx.Err(), context.Canceled) {
+			t.Fatalf("legacy observer suppressed cancellation: %v", sess.ctx.Err())
 		}
 	})
 	t.Run("OnClosedReason_only", func(t *testing.T) {
@@ -66,10 +66,37 @@ func Test_HardExpire_cancelPolicy_matchesBaselineObservers(t *testing.T) {
 		sess.OnSessionDown = func() {}
 		sess.OnClosedReason = func(SessionDownReason) {}
 		sess.onHardExpire()
-		if sess.ctx.Err() != nil {
-			t.Fatalf("production both-callbacks must keep skip-cancel, ctx.Err()=%v", sess.ctx.Err())
+		if !errors.Is(sess.ctx.Err(), context.Canceled) {
+			t.Fatalf("observers suppressed cancellation: %v", sess.ctx.Err())
 		}
 	})
+}
+
+func Test_HardExpire_keepsFirstReasonAcrossReentrantShutdown(t *testing.T) {
+	sess := newClosedTestSession(t)
+	var reasons []SessionDownReason
+	sess.OnClosedReason = func(reason SessionDownReason) {
+		reasons = append(reasons, reason)
+		if len(reasons) == 1 {
+			sess.Shutdown()
+		}
+	}
+	sess.onHardExpire()
+	sess.Shutdown()
+	if len(reasons) != 1 || reasons[0] != SessionDownKernelHardExpire {
+		t.Fatalf("terminal causes=%v, want exactly kernel_hard_expire", reasons)
+	}
+}
+
+func Test_HardExpire_retainsTypedCause(t *testing.T) {
+	sess := newClosedTestSession(t)
+	sess.ctx, sess.cancelCause = context.WithCancelCause(t.Context())
+	sess.onHardExpire()
+	sess.Shutdown()
+	var closed *SessionClosedError
+	if !errors.As(context.Cause(sess.ctx), &closed) || closed.Reason != SessionDownKernelHardExpire {
+		t.Fatalf("cause=%v, want typed hard expiration", context.Cause(sess.ctx))
+	}
 }
 
 func Test_ClosedReason_doesNotDelayCancel_whenCallbackBlocks(t *testing.T) {

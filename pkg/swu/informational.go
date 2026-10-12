@@ -93,13 +93,7 @@ func (s *Session) StartDPD(interval time.Duration) {
 					s.Logger.Error("DPD 重传耗尽，判定对端不可达",
 						logger.Err(err))
 					reason := dpdClosedReason(ctx)
-					if s.OnSessionDown != nil {
-						go s.OnSessionDown()
-					}
-					if s.cancel != nil {
-						s.cancel()
-					}
-					s.observeClosed(reason)
+					s.endSession(reason, "")
 					return
 				}
 				s.recordInboundActivity(time.Now())
