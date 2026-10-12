@@ -19,7 +19,12 @@ type OuterXFRMContext struct {
 
 // OuterXFRM returns the current outer tunnel XFRM context, or ok=false if not ready.
 func (s *Session) OuterXFRM() (OuterXFRMContext, bool) {
-	if s == nil || s.xfrmMgr == nil || s.ChildSAOut == nil || s.ChildSAIn == nil {
+	if s == nil {
+		return OuterXFRMContext{}, false
+	}
+	s.childMu.RLock()
+	defer s.childMu.RUnlock()
+	if s.xfrmMgr == nil || s.ChildSAOut == nil || s.ChildSAIn == nil {
 		return OuterXFRMContext{}, false
 	}
 	if s.xfrmLocalIP == nil || s.xfrmRemoteIP == nil || s.xfrmIfID == 0 {

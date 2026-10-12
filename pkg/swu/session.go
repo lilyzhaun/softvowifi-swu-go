@@ -62,9 +62,11 @@ type Session struct {
 	ikeIsAEAD         bool
 
 	// Child SA 状态 (目前仅支持一对)
-	ChildSAIn  *ipsec.SecurityAssociation
-	ChildSAOut *ipsec.SecurityAssociation
-	ChildSAsIn map[uint32]*ipsec.SecurityAssociation
+	ChildSAIn    *ipsec.SecurityAssociation
+	ChildSAOut   *ipsec.SecurityAssociation
+	ChildSAsIn   map[uint32]*ipsec.SecurityAssociation
+	childMu      sync.RWMutex
+	retiredChild *peerChildRetirement // rekeyMu owns retirement and request replay.
 
 	childSPI            uint32
 	childDH             *crypto.DiffieHellman
@@ -744,7 +746,7 @@ func (s *Session) startNATKeepalive(interval time.Duration) {
 
 			// 智能流量感知：去内核中捞一把最新的交互状态
 			if s.xfrmMgr != nil {
-				if outsa := s.ChildSAOut; outsa != nil {
+				if _, outsa := s.childPair(); outsa != nil {
 					if useTime, err := s.xfrmMgr.GetSALastUsed(outsa.SPI, s.xfrmLocalIP, s.xfrmRemoteIP, netlink.XFRM_PROTO_ESP); err == nil && useTime > 0 {
 						// useTime 返回的是最近一次使用的 Unix Timestamp
 						lastUsedNetlink := time.Unix(int64(useTime), 0)
@@ -948,13 +950,8 @@ func (s *Session) startXFRMExpireMonitor() {
 
 				// 过滤：只处理本 session 的 SA
 				spi := uint32(expire.XfrmState.Spi)
-				isOurSA := false
-				if s.ChildSAOut != nil && s.ChildSAOut.SPI == spi {
-					isOurSA = true
-				}
-				if s.ChildSAIn != nil && s.ChildSAIn.SPI == spi {
-					isOurSA = true
-				}
+				in, out := s.childPair()
+				isOurSA := (in != nil && in.SPI == spi) || (out != nil && out.SPI == spi)
 				if !isOurSA {
 					continue
 				}
@@ -1320,13 +1317,6 @@ func (s *Session) setupXFRMDataPlane() error {
 	return nil
 }
 
-func (s *Session) rekeyXFRMSA(oldOutSPI, oldInSPI uint32, newSAOut, newSAIn *ipsec.SecurityAssociation, encrID uint16, encrKeyLenBits int) error {
-	if s.xfrmMgr == nil {
-		return nil
-	}
-	return s.rekeyXFRM(s.xfrmMgr, childSARekey{out: newSAOut, in: newSAIn, encrID: encrID, keyBits: encrKeyLenBits}, [2]uint32{oldOutSPI, oldInSPI})
-}
-
 type netToolsDeleter interface {
 	DelAddress(iface string, cidr string) error
 	DelRoute(cidr string, gw string, iface string) error
@@ -1648,12 +1638,7 @@ func (s *Session) startDataPlaneLoop() {
 				spi = binary.BigEndian.Uint32(espData[0:4])
 			}
 
-			sa := s.ChildSAIn
-			if len(espData) >= 4 && s.ChildSAsIn != nil {
-				if hit, ok := s.ChildSAsIn[spi]; ok {
-					sa = hit
-				}
-			}
+			sa := s.incomingChild(spi)
 
 			if sa == nil {
 				s.Logger.Warn("ESP 入站 SA 为空，丢弃数据包", logger.Uint32("spi", spi), logger.Int("len", len(espData)))

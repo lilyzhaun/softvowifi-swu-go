@@ -141,12 +141,7 @@ func (s *Session) startNetstackDataPlaneLoop() {
 				spi = binary.BigEndian.Uint32(espData[0:4])
 			}
 
-			sa := s.ChildSAIn
-			if len(espData) >= 4 && s.ChildSAsIn != nil {
-				if hit, ok := s.ChildSAsIn[spi]; ok {
-					sa = hit
-				}
-			}
+			sa := s.incomingChild(spi)
 			if sa == nil {
 				s.Logger.Warn("netstack ESP 入站 SA 为空，丢弃数据包", logger.Uint32("spi", spi), logger.Int("len", len(espData)))
 				continue

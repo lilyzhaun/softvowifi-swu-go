@@ -22,13 +22,10 @@ type childSARekey struct {
 	keyBits int
 }
 
-func (s *Session) rekeyXFRM(ops childRekeyXFRMOps, next childSARekey, old [2]uint32) error {
-	if ops == nil {
-		return nil
-	}
+func (s *Session) childRekeyXFRMConfigs(next childSARekey) (out, in driver.XFRMSAConfig, policies []driver.XFRMSPConfig, err error) {
 	localIP, remoteIP := s.xfrmLocalIP, s.xfrmRemoteIP
 	isAEAD := driver.IsAEADAlgorithm(next.encrID)
-	out := driver.XFRMSAConfig{
+	out = driver.XFRMSAConfig{
 		OutputMark: s.xfrmOutputMark,
 		Src:        localIP, Dst: remoteIP, SPI: next.out.SPI,
 		Proto: netlink.XFRM_PROTO_ESP, Mode: netlink.XFRM_MODE_TUNNEL,
@@ -37,7 +34,7 @@ func (s *Session) rekeyXFRM(ops childRekeyXFRMOps, next childSARekey, old [2]uin
 		Ifid: s.xfrmIfID, ReplayWindow: s.cfg.ReplayWindow,
 		SADir: netlink.XFRM_SA_DIR_OUT, ESN: s.childESN,
 	}
-	in := driver.XFRMSAConfig{
+	in = driver.XFRMSAConfig{
 		Src: remoteIP, Dst: localIP, SPI: next.in.SPI,
 		Proto: netlink.XFRM_PROTO_ESP, Mode: netlink.XFRM_MODE_TUNNEL,
 		IsAEAD: isAEAD, EncapType: netlink.XFRM_ENCAP_ESPINUDP,
@@ -48,7 +45,7 @@ func (s *Session) rekeyXFRM(ops childRekeyXFRMOps, next childSARekey, old [2]uin
 	if isAEAD {
 		info, err := driver.IKEv2AlgToXFRMAead(next.encrID, next.keyBits)
 		if err != nil {
-			return fmt.Errorf("Rekey 映射 AEAD 算法失败: %w", err)
+			return out, in, nil, fmt.Errorf("Rekey 映射 AEAD 算法失败: %w", err)
 		}
 		out.AeadAlgoName, in.AeadAlgoName = info.Name, info.Name
 		out.AeadKey, in.AeadKey = next.out.EncryptionKey, next.in.EncryptionKey
@@ -56,14 +53,14 @@ func (s *Session) rekeyXFRM(ops childRekeyXFRMOps, next childSARekey, old [2]uin
 	} else {
 		info, err := driver.IKEv2AlgToXFRMCrypt(next.encrID, next.keyBits)
 		if err != nil {
-			return fmt.Errorf("Rekey 映射加密算法失败: %w", err)
+			return out, in, nil, fmt.Errorf("Rekey 映射加密算法失败: %w", err)
 		}
 		out.CryptAlgoName, in.CryptAlgoName = info.Name, info.Name
 		out.CryptKey, in.CryptKey = next.out.EncryptionKey, next.in.EncryptionKey
 		if s.childIntegID != 0 {
 			auth, err := driver.IKEv2AlgToXFRMAuth(s.childIntegID)
 			if err != nil {
-				return fmt.Errorf("Rekey 映射完整性算法失败: %w", err)
+				return out, in, nil, fmt.Errorf("Rekey 映射完整性算法失败: %w", err)
 			}
 			out.AuthAlgoName, in.AuthAlgoName = auth.Name, auth.Name
 			out.AuthKey, in.AuthKey = next.out.IntegrityKey, next.in.IntegrityKey
@@ -72,9 +69,9 @@ func (s *Session) rekeyXFRM(ops childRekeyXFRMOps, next childSARekey, old [2]uin
 	}
 	networks := s.childPolicyNetworks()
 	if len(networks) == 0 {
-		return initialChildFailure("no active policy family")
+		return out, in, nil, initialChildFailure("no active policy family")
 	}
-	policies := make([]driver.XFRMSPConfig, 0, 4)
+	policies = make([]driver.XFRMSPConfig, 0, 4)
 	for _, src := range networks {
 		policies = append(policies, driver.XFRMSPConfig{
 			Src: src, Dst: src, Dir: netlink.XFRM_DIR_OUT,
@@ -93,6 +90,18 @@ func (s *Session) rekeyXFRM(ops childRekeyXFRMOps, next childSARekey, old [2]uin
 			TmplSPI: int(next.in.SPI), Ifid: s.xfrmIfID,
 		})
 	}
+	return out, in, policies, nil
+}
+
+func (s *Session) rekeyXFRM(ops childRekeyXFRMOps, next childSARekey, old [2]uint32) error {
+	if ops == nil {
+		return nil
+	}
+	out, in, policies, err := s.childRekeyXFRMConfigs(next)
+	if err != nil {
+		return err
+	}
+	localIP, remoteIP := s.xfrmLocalIP, s.xfrmRemoteIP
 	if err := ops.AddSA(out); err != nil {
 		return fmt.Errorf("Rekey 安装出站 SA 失败: %w", err)
 	}

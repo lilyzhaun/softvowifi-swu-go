@@ -904,6 +904,7 @@ func (s *Session) handleIKEAuthFinalParsed(payloads []ikev2.Payload) error {
 
 	// All validation and key derivation finished. No error paths or external
 	// callbacks may observe a partially committed initial Child transaction.
+	s.childMu.Lock()
 	s.ChildSAOut, s.ChildSAIn = childOut, childIn
 	if s.ChildSAsIn != nil {
 		s.ChildSAsIn[s.childSPI] = s.ChildSAIn
@@ -923,6 +924,7 @@ func (s *Session) handleIKEAuthFinalParsed(payloads []ikev2.Payload) error {
 		s.resumeOldSKd = append([]byte(nil), s.Keys.SK_d...)
 	}
 	s.childOutPolicies = append(s.childOutPolicies, childOutPolicy{saOut: childOut, tsr: s.tsr})
+	s.childMu.Unlock()
 
 	if s.ws != nil {
 		s.ws.LogChildSA(s.childSPI, remoteSPI, s.cfg.LocalAddr, s.cfg.EpDGAddr, inEncKey, outEncKey, encrID)
