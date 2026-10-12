@@ -38,8 +38,8 @@ func DecodePayloadDelete(data []byte) (*EncryptedPayloadDelete, error) {
 	numSPIs := binary.BigEndian.Uint16(data[2:4])
 
 	expectedLen := 4 + int(spiSize)*int(numSPIs)
-	if len(data) < expectedLen {
-		return nil, errors.New("删除载荷对于 SPI 数据来说太短")
+	if len(data) != expectedLen {
+		return nil, errors.New("删除载荷与 SPI 数量长度不匹配")
 	}
 
 	return &EncryptedPayloadDelete{
