@@ -42,6 +42,10 @@ func (s *Session) validateWindowResponse(msg *OutgoingMessage, data []byte) (*pr
 			return nil, false, ikev2.ErrInitResponse
 		}
 		_, err := ikev2.DecodeInitResponse(data, msg.Packets[0])
+		var hint *ikev2.InitNotifyHintError
+		if errors.As(err, &hint) {
+			s.recordInitNotifyHint(*hint)
+		}
 		// This strictly rejected response only authorizes a fresh original-suite
 		// retry. Deliver the typed error to Connect, never commit its SA state.
 		var numbering *ikev2.InitProposalNumberError

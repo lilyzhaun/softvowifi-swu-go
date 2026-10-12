@@ -43,6 +43,12 @@ func DecodeInitResponse(data, offered []byte) (*IKEPacket, error) {
 			case NO_PROPOSAL_CHOSEN, REDIRECT:
 				return packet, nil
 			}
+			// Unknown noncritical payloads are skipped by the decoder. A
+			// diagnostic hint still requires exactly one Notify on the wire.
+			if header.NextPayload != N || data[IKE_HEADER_LEN] != byte(NoNextPayload) {
+				return nil, ErrInitResponse
+			}
+			return nil, initNotifyHint(notify)
 		}
 	}
 	if header.SPIr == 0 {
