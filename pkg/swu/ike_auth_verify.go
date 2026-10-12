@@ -298,7 +298,7 @@ func (s *Session) completePostEAPMessage(message *protectedIKEMessage, sendFinal
 	if err != nil {
 		return fmt.Errorf("failed to send final AUTH: %w", err)
 	}
-	return s.handleIKEAuthFinalParsed(final.payloads)
+	return s.handleIKEAuthFinalParsed(finalChildPayloadOrder(final.payloads))
 }
 
 func (s *Session) resetIKEAuthTranscripts() {
