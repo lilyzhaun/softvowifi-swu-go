@@ -299,7 +299,7 @@ func (s *Session) handleIncomingInformationalParsed(msgID uint32, payloads []ike
 			}
 			// RFC 5685: REDIRECT — 网关主动要求回弹重连
 			if notify.NotifyType == ikev2.REDIRECT {
-				addr, err := ParseRedirectData(notify.NotifyData)
+				addr, err := parseRuntimeRedirect(notify)
 				if err != nil {
 					s.Logger.Warn("解析运行期 REDIRECT 负载失败", logger.Err(err))
 				} else {

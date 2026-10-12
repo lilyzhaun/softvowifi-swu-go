@@ -33,3 +33,10 @@ failed on the base. Focused tests then passed; full `go test -p 1 -race
 -shuffle=on -count=1 -timeout=120s ./...` and `go vet -p 1 ./...` passed
 using Go 1.26.0. Consumer fixed-pin integration and device validation remain
 separate requirements.
+
+Consumer integration exposed an adjacent runtime REDIRECT framing defect:
+RFC 5685 section 9.2 includes an identity-length octet, which the existing
+type-plus-identity helper does not consume. Follow-up branch
+`fix/runtime-redirect-framing-20261012`, base `0170fad`, owner `lilyzhaun`,
+is limited to the protected runtime parser and its valid/invalid fixtures.
+The unprotected SA_INIT nonce/redirect protocol is a separate boundary.
