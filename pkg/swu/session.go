@@ -160,6 +160,8 @@ type Session struct {
 	// 生命周期管理
 	ctx           context.Context
 	cancel        context.CancelFunc
+	cancelCause   context.CancelCauseFunc
+	terminalOnce  sync.Once
 	reauthTrigger chan struct{} // 触发 Reauth 的信号通道
 
 	taskMgr *TaskManager // 取代了 retryCtx，滑动窗口与并发队列调度器
@@ -240,7 +242,8 @@ func initFastReauthCtx(cfg *Config) *eap.FastReauthContext {
 
 // Connect 连接到 ePDG，支持 REDIRECT 重连和 Reauthentication
 func (s *Session) Connect(ctx context.Context) error {
-	s.ctx, s.cancel = context.WithCancel(ctx)
+	s.ctx, s.cancelCause = context.WithCancelCause(ctx)
+	s.cancel = func() { s.cancelCause(context.Canceled) }
 	defer s.cancel()
 	defer close(s.done)
 	const maxRedirects = 3
@@ -574,7 +577,9 @@ func (s *Session) connectOnce() (result error) {
 		err = ErrReauth
 	}
 
-	if err != ErrReauth {
+	var closed *SessionClosedError
+	peerDeleted := errors.As(context.Cause(s.ctx), &closed) && closed.Reason == SessionDownPeerIKEDelete
+	if err != ErrReauth && !peerDeleted {
 		// 仅在非 Reauth（正常关闭）时发送 Delete
 		if err := s.sendDeleteIKE(); err != nil {
 			s.Logger.Warn("发送 Delete 通知失败", logger.Err(err))
@@ -584,7 +589,7 @@ func (s *Session) connectOnce() (result error) {
 	if err == ErrReauth {
 		return err
 	}
-	return s.ctx.Err()
+	return context.Cause(s.ctx)
 }
 
 // Reauthenticate 触发完全重认证 (RFC 7296 §2.8.3)
@@ -829,13 +834,7 @@ func (s *Session) startIKESARekeyTimer(interval time.Duration) {
 					if failCount >= rekeyMaxFail {
 						s.Logger.Error("IKE SA Rekey 连续失败达上限，触发隧道重建",
 							logger.Int("maxFail", rekeyMaxFail))
-						if s.OnSessionDown != nil {
-							go s.OnSessionDown()
-						}
-						if s.cancel != nil {
-							s.cancel()
-						}
-						s.observeClosed(class)
+						s.endSession(class, "")
 						return
 					}
 					timer.Reset(60 * time.Second)
@@ -896,13 +895,7 @@ func (s *Session) startChildSARekeyTimer(interval time.Duration) {
 					if failCount >= rekeyMaxFail {
 						s.Logger.Error("Child SA Rekey 连续失败达上限，触发隧道重建",
 							logger.Int("maxFail", rekeyMaxFail))
-						if s.OnSessionDown != nil {
-							go s.OnSessionDown()
-						}
-						if s.cancel != nil {
-							s.cancel()
-						}
-						s.observeClosed(SessionDownChildRekeyFailed)
+						s.endSession(SessionDownChildRekeyFailed, "")
 						return
 					}
 					timer.Reset(60 * time.Second) // 失败后 1 分钟重试
@@ -988,11 +981,8 @@ func (s *Session) startXFRMExpireMonitor() {
 
 // Shutdown 优雅关闭会话
 func (s *Session) Shutdown() {
-	if s.cancel != nil {
-		s.cancel()
-	}
+	s.endSession(SessionDownLocalCancel, "")
 	s.fragmentBuf.clear()
-	s.observeClosed(SessionDownLocalCancel)
 }
 
 func (s *Session) setupDataPlane() error {

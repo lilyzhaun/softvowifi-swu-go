@@ -23,6 +23,8 @@ func Test_PeerInformational_attemptsReplyBeforeBlockedObserver(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			sess, pipe := newPeerInformationalSession(t)
+			canceledAtReply := make(chan bool, 1)
+			pipe.beforeSend = func() { canceledAtReply <- sess.ctx.Err() != nil }
 			entered := make(chan struct{})
 			release := make(chan struct{})
 			t.Cleanup(func() {
@@ -45,6 +47,9 @@ func Test_PeerInformational_attemptsReplyBeforeBlockedObserver(t *testing.T) {
 			case <-pipe.sent:
 			case <-time.After(2 * time.Second):
 				t.Fatal("INFORMATIONAL reply not attempted while observer blocked")
+			}
+			if <-canceledAtReply {
+				t.Fatal("session canceled before attempting the peer reply")
 			}
 			select {
 			case <-entered:
@@ -77,9 +82,12 @@ func Test_PeerInformational_observesAfterFailedReplyAttempt(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("closed reason not observed after failed reply")
 	}
+	if sess.ctx.Err() == nil {
+		t.Fatal("failed acknowledgement kept a deleted session alive")
+	}
 }
 
-func Test_PeerIKEDelete_skipCancel_whenLegacyOnSessionDown(t *testing.T) {
+func Test_PeerIKEDelete_cancelsWithLegacyObserver(t *testing.T) {
 	sess, pipe := newPeerInformationalSession(t)
 	sess.OnSessionDown = func() {}
 	done := make(chan struct{})
@@ -95,15 +103,16 @@ func Test_PeerIKEDelete_skipCancel_whenLegacyOnSessionDown(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("reason not observed")
 	}
-	if sess.ctx.Err() != nil {
-		t.Fatalf("legacy skip-cancel broken: %v", sess.ctx.Err())
+	if sess.ctx.Err() == nil {
+		t.Fatal("peer deletion did not cancel the session with a legacy observer")
 	}
 }
 
 type pipeTransport struct {
-	ike     chan []byte
-	sent    chan []byte
-	sendErr error
+	ike        chan []byte
+	sent       chan []byte
+	sendErr    error
+	beforeSend func()
 }
 
 var errSendIKE = errPipeSend{}
@@ -115,6 +124,9 @@ func (errPipeSend) Error() string { return "send ike failed" }
 func (p *pipeTransport) Start() {}
 func (p *pipeTransport) Stop()  {}
 func (p *pipeTransport) SendIKE(b []byte) error {
+	if p.beforeSend != nil {
+		p.beforeSend()
+	}
 	p.sent <- append([]byte(nil), b...)
 	return p.sendErr
 }
