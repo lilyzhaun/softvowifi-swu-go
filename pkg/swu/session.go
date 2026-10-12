@@ -216,21 +216,23 @@ func NewSession(cfg *Config, l *zap.Logger) *Session {
 	}
 
 	return &Session{
-		cfg:              cfg,
-		Logger:           l,
-		net:              netTools,
-		SPIi:             spii,
-		ChildSAsIn:       make(map[uint32]*ipsec.SecurityAssociation),
-		ikeWaiters:       make(map[ikeWaitKey]chan *protectedIKEMessage),
-		ikePending:       make(map[ikeWaitKey]*protectedIKEMessage),
-		childOutPolicies: make([]childOutPolicy, 0),
-		done:             make(chan struct{}),
-		reauthTrigger:    make(chan struct{}, 1),
-		fragmentBuf:      newFragmentBuffer(),
-		ikeFragmentMTU:   1280,             // Default MTU
-		resumeTicket:     cfg.ResumeTicket, // 从外级上下文挂载可能传下来的“前世”车票
-		resumeOldSKd:     cfg.ResumeOldSKd,
-		fastReauthCtx:    initFastReauthCtx(cfg),
+		cfg:               cfg,
+		Logger:            l,
+		net:               netTools,
+		SPIi:              spii,
+		ChildSAsIn:        make(map[uint32]*ipsec.SecurityAssociation),
+		ikeWaiters:        make(map[ikeWaitKey]chan *protectedIKEMessage),
+		ikePending:        make(map[ikeWaitKey]*protectedIKEMessage),
+		childOutPolicies:  make([]childOutPolicy, 0),
+		done:              make(chan struct{}),
+		reauthTrigger:     make(chan struct{}, 1),
+		rekeyResetCh:      make(chan struct{}, 1),
+		childRekeyResetCh: make(chan struct{}, 1),
+		fragmentBuf:       newFragmentBuffer(),
+		ikeFragmentMTU:    1280,             // Default MTU
+		resumeTicket:      cfg.ResumeTicket, // 从外级上下文挂载可能传下来的“前世”车票
+		resumeOldSKd:      cfg.ResumeOldSKd,
+		fastReauthCtx:     initFastReauthCtx(cfg),
 	}
 }
 
@@ -796,9 +798,6 @@ func (s *Session) startNATKeepalive(interval time.Duration) {
 func (s *Session) startIKESARekeyTimer(interval time.Duration) {
 	const rekeyMaxFail = 2
 
-	// 初始化 rekey 重置 channel
-	s.rekeyResetCh = make(chan struct{}, 1)
-
 	go func() {
 		// 引入随机的 jitter_time，提早 (0 ~ 30s) 行动以错开跟 ePDG 断链的强时间并发
 		jitter := time.Duration(rand.Int63n(int64(ikeRekeyJitter))) * time.Second
@@ -857,9 +856,6 @@ func (s *Session) startIKESARekeyTimer(interval time.Duration) {
 // 参考 strongSwan rekey_child_sa_job + jitter 机制
 func (s *Session) startChildSARekeyTimer(interval time.Duration) {
 	const rekeyMaxFail = 2
-
-	// 初始化 child rekey 重置 channel
-	s.childRekeyResetCh = make(chan struct{}, 1)
 
 	go func() {
 		// 首次启动添加 jitter，避免多设备同时 Rekey

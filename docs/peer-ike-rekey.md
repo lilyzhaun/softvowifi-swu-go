@@ -35,3 +35,9 @@ the retained crypto library supports only DH14, so no DH19 support is claimed.
 Host success does not imply carrier rekey, the complete request replay window,
 simultaneous rekey resolution or long-term validation. Consumer real UDP,
 fixed-pin and device gates remain separate.
+
+Follow-up `fix/rekey-reset-publication-20261012`, base `f766795`, same owner:
+consumer real UDP completed the rekey but race detection exposed timer
+startup replacing a reset channel concurrently with the immediately active
+dispatcher. Constructor publication must precede control-plane exposure;
+the two timers must keep those channels rather than replacing them.
