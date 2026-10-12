@@ -179,7 +179,9 @@ type Session struct {
 	innerRx     chan []byte
 	innerClosed chan struct{}
 
-	Logger *zap.Logger
+	Logger     *zap.Logger
+	initHintMu sync.Mutex
+	initHints  []ikev2.InitNotifyHintError
 }
 
 type ikeWaitKey struct {
@@ -414,7 +416,7 @@ func (s *Session) connectOnce() (result error) {
 				return s.ctx.Err()
 			case respData, ok = <-compCh:
 				if !ok || respData == nil {
-					return ErrWindowTimeout
+					return s.initWindowTimeout()
 				}
 			}
 

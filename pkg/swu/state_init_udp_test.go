@@ -15,6 +15,9 @@ import (
 
 	"github.com/1239t/swu-go/pkg/crypto"
 	"github.com/1239t/swu-go/pkg/ikev2"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 func Test_ConnectProtectsAuth_whenUDPPeerSelectsFourthSuite(t *testing.T) {
@@ -23,8 +26,10 @@ func Test_ConnectProtectsAuth_whenUDPPeerSelectsFourthSuite(t *testing.T) {
 		reject bool
 		mutate func([]byte) []byte
 		single uint8
+		hint   bool
 	}{
 		{name: "fourth suite"},
+		{name: "unauthenticated KE hint then fourth suite", hint: true},
 		{name: "fresh single fourth suite", single: 4},
 		{name: "cross proposal rejected", reject: true},
 		{name: "minor V reserved", mutate: initRFCReservedWire},
@@ -41,6 +46,16 @@ func Test_ConnectProtectsAuth_whenUDPPeerSelectsFourthSuite(t *testing.T) {
 				t.Fatal(err)
 			}
 			sess := newInitTestSession("")
+			hintSeen := make(chan struct{}, 1)
+			if scenario.hint {
+				core, _ := observer.New(zapcore.DebugLevel)
+				sess.Logger = zap.New(core, zap.Hooks(func(entry zapcore.Entry) error {
+					if entry.Message == "IKE_SA_INIT unauthenticated notification hint" {
+						hintSeen <- struct{}{}
+					}
+					return nil
+				}))
+			}
 			sess.cfg.InitialIKEProposalNumber = scenario.single
 			sess.cfg.LocalAddr = "127.0.0.1"
 			sess.cfg.LocalPort = 0
@@ -69,6 +84,23 @@ func Test_ConnectProtectsAuth_whenUDPPeerSelectsFourthSuite(t *testing.T) {
 			request, err := ikev2.DecodePacket(offered)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if scenario.hint {
+				if _, err := peer.WriteToUDP(initHintWire(request.Header.SPIi, 17, []byte{0, 19}), address); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case <-hintSeen:
+				case <-ctx.Done():
+					t.Fatal("wire notification produced no diagnostic")
+				}
+				sess.taskMgr.mu.Lock()
+				pending := sess.taskMgr.pending[0]
+				preserved := pending != nil && pending.RetryCount == 0 && len(pending.Packets) == 1 && bytes.Equal(pending.Packets[0], offered)
+				sess.taskMgr.mu.Unlock()
+				if !preserved {
+					t.Fatal("wire advisory changed the actual INIT request")
+				}
 			}
 			var ni []byte
 			for _, payload := range request.Payloads {

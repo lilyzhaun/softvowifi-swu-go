@@ -19,6 +19,8 @@ The retained code includes IKEv2 payloads, AKA processing, ESP sockets/data plan
 Linux network drivers and session lifecycle logic. Reviewed maintenance includes:
 
 - COOKIE retries prepend the challenge without changing the original INIT offer.
+- Rejected unauthenticated INIT errors retain bounded public diagnostic hints
+  without changing proposals or retries; see [notification hints](docs/init-notify-hints.md).
 - Final IKE_AUTH rejection notifications are preserved instead of being hidden by
   an incomplete-Child-SA error.
 - Configured equipment identity is sent on an existing gateway request path,
