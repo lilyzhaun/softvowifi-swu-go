@@ -14,7 +14,11 @@ import (
 )
 
 // NetTools 封装网络配置操作
-type NetTools struct{}
+type NetTools struct {
+	// SourceRulePriority orders source-address fallback after consumer-owned
+	// interface/mark rules. Zero preserves the kernel's automatic priority.
+	SourceRulePriority int
+}
 
 // NewNetTools 创建 NetTools 实例
 func NewNetTools() *NetTools {
@@ -325,6 +329,9 @@ func (n *NetTools) AddRule(srcCIDR string, table int) error {
 	rule := netlink.NewRule()
 	rule.Src = src
 	rule.Table = table
+	if n.SourceRulePriority > 0 {
+		rule.Priority = n.SourceRulePriority
+	}
 	if src.IP.To4() == nil {
 		rule.Family = netlink.FAMILY_V6
 	} else {
