@@ -24,6 +24,7 @@ const (
 	SessionDownDPDExhausted            SessionDownReason = "dpd_exhausted"
 	SessionDownDPDFailed               SessionDownReason = "dpd_failed"
 	SessionDownPeerIKEDelete           SessionDownReason = "peer_ike_delete"
+	SessionDownPeerChildDelete         SessionDownReason = "peer_child_delete"
 	SessionDownKernelHardExpire        SessionDownReason = "kernel_hard_expire"
 	SessionDownRedirect                SessionDownReason = "redirect"
 	SessionDownLocalCancel             SessionDownReason = "local_cancel"
@@ -42,6 +43,7 @@ func ParseSessionDownReason(raw string) SessionDownReason {
 		SessionDownDPDExhausted,
 		SessionDownDPDFailed,
 		SessionDownPeerIKEDelete,
+		SessionDownPeerChildDelete,
 		SessionDownKernelHardExpire,
 		SessionDownRedirect,
 		SessionDownLocalCancel,

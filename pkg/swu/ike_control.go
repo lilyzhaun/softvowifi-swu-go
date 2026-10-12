@@ -208,6 +208,17 @@ func (s *Session) handleIncomingInformationalParsed(msgID uint32, payloads []ike
 			}
 		}
 	}()
+	// An IKE Delete closes the whole generation; its response is empty even
+	// when the request also mentions one of its Child SAs.
+	for _, pl := range payloads {
+		if del, ok := pl.(*ikev2.EncryptedPayloadDelete); ok && del.ProtocolID == ikev2.ProtoIKE {
+			if del.SPISize != 0 || del.NumSPIs != 0 || len(del.SPIs) != 0 {
+				return errors.New("invalid IKE Delete shape")
+			}
+			closed = SessionDownPeerIKEDelete
+			return s.sendEncryptedResponseWithMsgID(nil, ikev2.INFORMATIONAL, msgID)
+		}
+	}
 
 	// 没有载荷 = DPD 请求，直接回复空 INFORMATIONAL
 	if len(payloads) == 0 {
@@ -326,40 +337,33 @@ func (s *Session) handleIncomingInformationalParsed(msgID uint32, payloads []ike
 			continue
 		}
 
-		if del.ProtocolID == ikev2.ProtoIKE {
-			s.Logger.Warn("收到 ePDG 发起的 IKE SA Delete，会话即将关闭")
-			if closed == "" {
-				closed = SessionDownPeerIKEDelete
-			}
-			continue
-		}
-
 		if del.ProtocolID != ikev2.ProtoESP || del.SPISize != 4 {
 			continue
 		}
 
-		// 收集需要回复的本端出站 SPI（对齐 strongSwan delete_child_sa 行为）
+		if int(del.NumSPIs)*4 != len(del.SPIs) {
+			return errors.New("invalid ESP Delete shape")
+		}
+		// Do not block the receiver on a local exchange whose response it owns.
+		// The peer can retransmit after that exchange finishes.
+		if !s.rekeyMu.TryLock() {
+			return errors.New("Child Delete deferred during rekey")
+		}
+		// RFC7296 1.4.1: sender-inbound SPI = our outbound SPI. Echo only
+		// our paired inbound SPI. Full Connect cleanup owns this last pair.
 		var deletedLocalSPIs []uint32
 		for i := 0; i+4 <= len(del.SPIs); i += 4 {
 			spi := binary.BigEndian.Uint32(del.SPIs[i : i+4])
 			s.Logger.Warn("收到 ePDG 发起的 Child SA Delete",
 				logger.Uint32("spi", spi))
-			// 查找对应本端出站 SPI 用于 Delete 确认
-			if s.ChildSAOut != nil && s.ChildSAIn != nil && s.ChildSAIn.SPI == spi {
-				deletedLocalSPIs = append(deletedLocalSPIs, s.ChildSAOut.SPI)
-			}
-			if s.ChildSAsIn != nil {
-				delete(s.ChildSAsIn, spi)
-			}
-			if s.ChildSAOut != nil && s.ChildSAOut.SPI == spi {
-				s.ChildSAOut = nil
-				if len(s.childOutPolicies) > 0 {
-					s.childOutPolicies[0].saOut = nil
-				}
+			if s.ChildSAOut != nil && s.ChildSAIn != nil && s.ChildSAOut.SPI == spi && len(deletedLocalSPIs) == 0 {
+				deletedLocalSPIs = append(deletedLocalSPIs, s.ChildSAIn.SPI)
+				closed = SessionDownPeerChildDelete
 			}
 		}
+		s.rekeyMu.Unlock()
 
-		// 回复 Delete 确认（包含本端出站 SPI）
+		// Attempt the paired response before the terminal callback/cancellation.
 		if len(deletedLocalSPIs) > 0 {
 			raw := make([]byte, 0, 4*len(deletedLocalSPIs))
 			for _, localSPI := range deletedLocalSPIs {
