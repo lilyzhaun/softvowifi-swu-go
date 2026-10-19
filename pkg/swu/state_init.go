@@ -51,32 +51,47 @@ func (s *Session) buildIKESAInitPacket() ([]byte, error) {
 		rand.Read(s.ni)
 	}
 
-	if s.DH == nil {
-		var err error
-		s.DH, err = crypto.NewDiffieHellman(14)
+	var proposals []*ikev2.Proposal
+	if s.sendCookie && len(s.cookie) > 0 && s.DH != nil && len(s.initProposals) > 0 {
+		proposals = s.initProposals
+	} else {
+		dhGroup, err := effectiveIKEDHGroup(s.cfg)
 		if err != nil {
 			return nil, err
 		}
-		if err := s.DH.GenerateKey(); err != nil {
-			return nil, err
-		}
-	}
-
-	proposals := ikev2.CreateIKEProposals(s.cfg.IKEProposalLayout, nil)
-	if number := s.cfg.InitialIKEProposalNumber; number != 0 {
-		var chosen *ikev2.Proposal
-		for _, proposal := range proposals {
-			if proposal.ProposalNum == number && len(proposal.Transforms) == 4 {
-				copy := *proposal
-				copy.ProposalNum = 1
-				chosen = &copy
-				break
+		if s.DH == nil || s.DH.Group != dhGroup {
+			s.DH, err = crypto.NewDiffieHellman(dhGroup)
+			if err != nil {
+				return nil, err
+			}
+			if err := s.DH.GenerateKey(); err != nil {
+				return nil, err
 			}
 		}
-		if chosen == nil {
-			return nil, errors.New("initial IKE proposal is not a complete original offer")
+
+		layout := ""
+		var initialNumber uint8
+		if s.cfg != nil {
+			layout = s.cfg.IKEProposalLayout
+			initialNumber = s.cfg.InitialIKEProposalNumber
 		}
-		proposals = []*ikev2.Proposal{chosen}
+		proposals = ikeProposalsForDHGroup(layout, ikev2.AlgorithmType(dhGroup))
+		if initialNumber != 0 {
+			var chosen *ikev2.Proposal
+			for _, proposal := range proposals {
+				if proposal.ProposalNum == initialNumber && len(proposal.Transforms) == 4 {
+					copy := *proposal
+					copy.ProposalNum = 1
+					chosen = &copy
+					break
+				}
+			}
+			if chosen == nil {
+				return nil, errors.New("initial IKE proposal is not a complete original offer")
+			}
+			proposals = []*ikev2.Proposal{chosen}
+		}
+		s.initProposals = proposals
 	}
 
 	saPayload := &ikev2.EncryptedPayloadSA{
@@ -84,7 +99,7 @@ func (s *Session) buildIKESAInitPacket() ([]byte, error) {
 	}
 
 	kePayload := &ikev2.EncryptedPayloadKE{
-		DHGroup: ikev2.MODP_2048_bit,
+		DHGroup: ikev2.AlgorithmType(s.DH.Group),
 		KEData:  s.DH.PublicKeyBytes(),
 	}
 
@@ -173,6 +188,32 @@ func (s *Session) buildIKESAInitPacket() ([]byte, error) {
 
 	s.msgBuffer = data
 	return data, nil
+}
+
+func effectiveIKEDHGroup(cfg *Config) (uint16, error) {
+	dhGroup := uint16(ikev2.MODP_2048_bit)
+	if cfg != nil && cfg.IKEDHGroup != 0 {
+		dhGroup = cfg.IKEDHGroup
+	}
+	if dhGroup != uint16(ikev2.MODP_1024_bit) && dhGroup != uint16(ikev2.MODP_2048_bit) {
+		return 0, fmt.Errorf("unsupported IKE DH group: %d", dhGroup)
+	}
+	return dhGroup, nil
+}
+
+func ikeProposalsForDHGroup(layout string, dhGroup ikev2.AlgorithmType) []*ikev2.Proposal {
+	proposals := ikev2.CreateIKEProposals(layout, nil)
+	if dhGroup == ikev2.MODP_2048_bit {
+		return proposals
+	}
+	for _, proposal := range proposals {
+		for _, transform := range proposal.Transforms {
+			if transform.Type == ikev2.TransformTypeDH {
+				transform.ID = dhGroup
+			}
+		}
+	}
+	return proposals
 }
 
 func (s *Session) handleIKESAInitResp(data, offered []byte) error {
@@ -361,6 +402,9 @@ func (s *Session) handleIKESAInitResp(data, offered []byte) error {
 		s.Logger.Info("SA_INIT: 对端 KE 公钥",
 			logger.Int("ke_len", len(kePayload.KEData)),
 			logger.String("ke_hash", sha256Hex(kePayload.KEData)))
+	}
+	if s.DH == nil || s.DH.Group != dhID {
+		return fmt.Errorf("DH 组与本地实例不匹配: %d", dhID)
 	}
 	if _, err := s.DH.ComputeSharedSecret(kePayload.KEData); err != nil {
 		return fmt.Errorf("DH 计算失败: %v", err)

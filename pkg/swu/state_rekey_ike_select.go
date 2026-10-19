@@ -4,7 +4,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math/big"
 
+	"github.com/1239t/swu-go/pkg/crypto"
 	"github.com/1239t/swu-go/pkg/ikev2"
 )
 
@@ -56,8 +58,13 @@ func (s *Session) selectIKERekeyResponse(payloads []ikev2.Payload) (ikeRekeySele
 	if err := s.matchIKERekeyTransforms(prop); err != nil {
 		return ikeRekeySelected{}, err
 	}
-	if ke.DHGroup != ikev2.AlgorithmType(s.ikeDHID) || len(ke.KEData) == 0 {
+	dh, err := crypto.NewDiffieHellman(s.ikeDHID)
+	if err != nil || ke.DHGroup != ikev2.AlgorithmType(s.ikeDHID) || len(ke.KEData) != (dh.P.BitLen()+7)/8 {
 		return ikeRekeySelected{}, fmt.Errorf("IKE SA Rekey 响应 KE 组不一致: %w", errIKERekeyResponse)
+	}
+	pub := new(big.Int).SetBytes(ke.KEData)
+	if pub.Cmp(big.NewInt(1)) <= 0 || pub.Cmp(new(big.Int).Sub(dh.P, big.NewInt(1))) >= 0 {
+		return ikeRekeySelected{}, fmt.Errorf("IKE SA Rekey 响应 KE 公钥无效: %w", errIKERekeyResponse)
 	}
 	if len(nonce.NonceData) < 16 {
 		return ikeRekeySelected{}, fmt.Errorf("IKE SA Rekey 响应 Nonce 过短: %w", errIKERekeyResponse)

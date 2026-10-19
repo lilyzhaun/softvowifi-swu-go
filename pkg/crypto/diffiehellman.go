@@ -6,9 +6,12 @@ import (
 	"math/big"
 )
 
-// RFC 3526 模指数 (MODP) Diffie-Hellman 组
+// RFC 2409 / RFC 3526 模指数 (MODP) Diffie-Hellman 组
 
 var (
+	// 组 2: 1024 位 MODP 组 (RFC 2409 §6.2)
+	// 素数是 2^1024 - 2^960 - 1 + 2^64 * { [2^894 pi] + 129093 }
+	prime1024, _ = new(big.Int).SetString("FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE65381FFFFFFFFFFFFFFFF", 16)
 	// 组 14: 2048 位 MODP 组
 	// 素数是 2^2048 - 2^1984 - 1 + 2^64 * { [2^1918 pi] + 124476 }
 	prime2048, _ = new(big.Int).SetString("FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AACAA68FFFFFFFFFFFFFFFF", 16)
@@ -28,6 +31,9 @@ func NewDiffieHellman(group uint16) (*DiffieHellman, error) {
 	dh := &DiffieHellman{Group: group}
 
 	switch group {
+	case 2: // MODP 1024
+		dh.P = prime1024
+		dh.G = gen2
 	case 14: // MODP 2048
 		dh.P = prime2048
 		dh.G = gen2
@@ -63,6 +69,13 @@ func (dh *DiffieHellman) GenerateKey() error {
 }
 
 func (dh *DiffieHellman) ComputeSharedSecret(peerPubKeyBytes []byte) ([]byte, error) {
+	if dh == nil || dh.P == nil || dh.PrivateKey == nil {
+		return nil, errors.New("无效的 DH 状态")
+	}
+	keyLen := (dh.P.BitLen() + 7) / 8
+	if len(peerPubKeyBytes) != keyLen {
+		return nil, errors.New("无效的对端公钥")
+	}
 	peerPubKey := new(big.Int).SetBytes(peerPubKeyBytes)
 
 	// 验证对端密钥: 1 < peer < P-1
@@ -76,28 +89,11 @@ func (dh *DiffieHellman) ComputeSharedSecret(peerPubKeyBytes []byte) ([]byte, er
 	secret := new(big.Int).Exp(peerPubKey, dh.PrivateKey, dh.P)
 
 	// 转换为字节 (左侧填充零以匹配载荷长度)
-	// P 是 2048 位 (256 字节)
-	keyLen := (dh.P.BitLen() + 7) / 8
-	secretBytes := secret.Bytes()
-
-	if len(secretBytes) < keyLen {
-		padding := make([]byte, keyLen-len(secretBytes))
-		dh.SharedKey = append(padding, secretBytes...)
-	} else {
-		dh.SharedKey = secretBytes
-	}
-
+	dh.SharedKey = secret.FillBytes(make([]byte, keyLen))
 	return dh.SharedKey, nil
 }
 
 func (dh *DiffieHellman) PublicKeyBytes() []byte {
-	// P 是 2048 位 (256 字节)
 	keyLen := (dh.P.BitLen() + 7) / 8
-	pubBytes := dh.PublicKey.Bytes()
-
-	if len(pubBytes) < keyLen {
-		padding := make([]byte, keyLen-len(pubBytes))
-		return append(padding, pubBytes...)
-	}
-	return pubBytes
+	return dh.PublicKey.FillBytes(make([]byte, keyLen))
 }
