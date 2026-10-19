@@ -90,14 +90,27 @@ func ValidateInitSelection(payloads, offered []Payload) error {
 			}
 		}
 	}
-	if selected == nil || ke == nil || nonce == nil || len(nonce.NonceData) < 16 ||
-		len(nonce.NonceData) > 256 || ke.DHGroup != MODP_2048_bit || len(ke.KEData) != 256 ||
+	var offeredKE *EncryptedPayloadKE
+	for _, payload := range offered {
+		if candidate, ok := payload.(*EncryptedPayloadKE); ok {
+			if offeredKE != nil {
+				return ErrInitResponse
+			}
+			offeredKE = candidate
+		}
+	}
+	if selected == nil || ke == nil || offeredKE == nil || nonce == nil || len(nonce.NonceData) < 16 ||
+		len(nonce.NonceData) > 256 || ke.DHGroup != offeredKE.DHGroup ||
 		selected.ProtocolID != ProtoIKE || len(selected.SPI) != 0 || len(selected.Transforms) != 4 {
 		return ErrInitResponse
 	}
 	dh, err := crypto.NewDiffieHellman(uint16(ke.DHGroup))
 	if err != nil {
-		return err
+		return ErrInitResponse
+	}
+	keyLen := (dh.P.BitLen() + 7) / 8
+	if len(ke.KEData) != keyLen || len(offeredKE.KEData) != keyLen {
+		return ErrInitResponse
 	}
 	public := new(big.Int).SetBytes(ke.KEData)
 	if public.Cmp(big.NewInt(1)) <= 0 || public.Cmp(new(big.Int).Sub(dh.P, big.NewInt(1))) >= 0 {

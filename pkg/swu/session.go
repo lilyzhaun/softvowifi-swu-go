@@ -149,8 +149,9 @@ type Session struct {
 	lastEncryptedMsgID uint32
 
 	// COOKIE 处理
-	cookie     []byte // ePDG 返回的 COOKIE
-	sendCookie bool   // 标记是否需要发送 COOKIE
+	cookie        []byte            // ePDG 返回的 COOKIE
+	sendCookie    bool              // 标记是否需要发送 COOKIE
+	initProposals []*ikev2.Proposal // 初始 IKE_SA_INIT 报价（COOKIE 重发时保持不变）
 
 	// RFC 5723: Session Resumption
 	resumeTicket []byte // ePDG 下发的 Ticket_Opaque
@@ -307,6 +308,9 @@ func (s *Session) connectOnce() (result error) {
 	s.xfrmOutputMark = 0
 	s.resetAKAIdentity()
 	s.resetIKEAuthTranscripts()
+	if _, err := effectiveIKEDHGroup(s.cfg); err != nil {
+		return err
+	}
 
 	s.Logger.Debug("初始化滑动窗口队列任务调度器 TaskManager", logger.Int("windowSize", 5))
 

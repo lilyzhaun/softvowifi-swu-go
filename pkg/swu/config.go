@@ -83,8 +83,12 @@ type Config struct {
 	IKEProposals []string
 	ESPProposals []string
 
+	// IKEDHGroup selects the IKE Diffie-Hellman group for explicit request
+	// construction. Zero preserves MODP group 14; only groups 2 and 14 are
+	// supported. Unauthenticated error notifications never downgrade this group.
+	IKEDHGroup uint16
 	// IKEProposalLayout selects IKE_SA_INIT SA grouping.
-	// "" and "multiple-complete" emit four complete DH14 suites.
+	// "" and "multiple-complete" emit four complete suites for the configured IKE DH group.
 	// "single-combined" emits one proposal containing that union.
 	IKEProposalLayout string
 	// InitialIKEProposalNumber restricts a fresh session to one complete proposal
