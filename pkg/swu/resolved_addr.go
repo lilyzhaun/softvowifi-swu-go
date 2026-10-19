@@ -3,6 +3,7 @@ package swu
 import (
 	"errors"
 	"fmt"
+	"net"
 )
 
 var ErrDiagnosticRedirect = errors.New("diagnostic endpoint is fixed: redirect refused")
@@ -20,5 +21,5 @@ func (c *Config) resolvedRemoteAddr(port uint16) string {
 	if c.DiagnosticRemoteIP.IsValid() {
 		host = c.DiagnosticRemoteIP.String()
 	}
-	return fmt.Sprintf("%s:%d", host, port)
+	return net.JoinHostPort(host, fmt.Sprint(port))
 }

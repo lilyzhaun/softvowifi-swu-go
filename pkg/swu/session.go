@@ -327,10 +327,10 @@ func (s *Session) connectOnce() (result error) {
 	if s.cfg.TransportFactory != nil {
 		s.socket, err = s.cfg.TransportFactory(localBind, remoteAddr)
 	} else {
-		s.socket, err = ipsec.NewSocketManagerWithControl(s.ctx, localBind, remoteAddr, s.cfg.DNSServer, s.cfg.SocketControl)
+		s.socket, err = ipsec.NewSocketManagerWithSource(s.ctx, localBind, remoteAddr, s.cfg.DNSServer, s.cfg.SocketControl, s.cfg.SourceIP)
 		if err != nil && localPort != 0 && errors.Is(err, syscall.EADDRINUSE) {
 			localBind = net.JoinHostPort(s.cfg.LocalAddr, "0")
-			s.socket, err = ipsec.NewSocketManagerWithControl(s.ctx, localBind, remoteAddr, s.cfg.DNSServer, s.cfg.SocketControl)
+			s.socket, err = ipsec.NewSocketManagerWithSource(s.ctx, localBind, remoteAddr, s.cfg.DNSServer, s.cfg.SocketControl, s.cfg.SourceIP)
 		}
 	}
 	if err != nil {
