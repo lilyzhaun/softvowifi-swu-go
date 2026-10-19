@@ -31,7 +31,7 @@ func DecodeInitResponse(data, offered []byte) (*IKEPacket, error) {
 	packet := &IKEPacket{Header: header, Payloads: payloads}
 	if len(packet.Payloads) == 1 {
 		if notify, ok := packet.Payloads[0].(*EncryptedPayloadNotify); ok {
-			if notify.ProtocolID != 0 || len(notify.SPI) != 0 {
+			if len(notify.SPI) != 0 {
 				return nil, ErrInitResponse
 			}
 			switch notify.NotifyType {

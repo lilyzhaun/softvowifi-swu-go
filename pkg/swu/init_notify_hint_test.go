@@ -102,7 +102,7 @@ func TestInitNotifyHintRejectsUnboundMalformedAndNonSinglePayloads(t *testing.T)
 		{"request", func(b []byte) []byte { b[19] = 0; return b }},
 		{"header length", func(b []byte) []byte { b[27]--; return b }},
 		{"truncated", func(b []byte) []byte { return b[:len(b)-1] }},
-		{"notify protocol", func(b []byte) []byte { b[32] = 3; return b }},
+		{"notify protocol with SPI", func(b []byte) []byte { b[32] = 1; b[33] = 1; return b }},
 		{"notify SPI", func(b []byte) []byte { b[33] = 1; return b }},
 		{"KE length", func(b []byte) []byte { b = append(b, 0); b[31]++; b[27]++; return b }},
 		{"dangling next", func(b []byte) []byte { b[28] = 41; return b }},
