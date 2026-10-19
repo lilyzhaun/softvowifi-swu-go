@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -117,15 +118,36 @@ func NewSocketManager(local, remote string, dnsServer string) (*SocketManager, e
 }
 
 func NewSocketManagerWithControl(ctx context.Context, local, remote, dnsServer string, control func(string, string, syscall.RawConn) error) (*SocketManager, error) {
-	localHost, _, err := net.SplitHostPort(local)
+	return NewSocketManagerWithSource(ctx, local, remote, dnsServer, control, nil)
+}
+
+// NewSocketManagerWithSource keeps network control on every socket while
+// selecting DNS and ePDG sources independently within that same network.
+func NewSocketManagerWithSource(ctx context.Context, local, remote, dnsServer string, control func(string, string, syscall.RawConn) error, sourceIP func(net.IP) (net.IP, error)) (*SocketManager, error) {
+	localHost, localPort, err := net.SplitHostPort(local)
 	if err != nil {
 		return nil, err
 	}
 	localIP := net.ParseIP(localHost)
-	rAddr, remoteIPs, err := resolveUDPAddrAllControlled(ctx, remote, dnsServer, localIP, control)
+	rAddr, remoteIPs, err := resolveUDPAddrAllWithSource(ctx, remote, dnsServer, localIP, control, sourceIP)
 	if err != nil {
 		return nil, err
 	}
+	selected, err := selectSourceIP(localIP, rAddr.IP, sourceIP)
+	if err != nil {
+		return nil, err
+	}
+	if sourceIP != nil {
+		local = net.JoinHostPort(selected.String(), localPort)
+	}
+	// A single UDP socket cannot rotate onto the other address family.
+	compatible := remoteIPs[:0]
+	for _, ip := range remoteIPs {
+		if (ip.To4() != nil) == (rAddr.IP.To4() != nil) {
+			compatible = append(compatible, ip)
+		}
+	}
+	remoteIPs = compatible
 	if len(remoteIPs) == 0 && rAddr.IP != nil {
 		remoteIPs = []net.IP{rAddr.IP}
 	}
@@ -169,8 +191,12 @@ func resolveUDPAddrAll(addr string, dnsServer string) (*net.UDPAddr, []net.IP, e
 }
 
 func resolveUDPAddrAllControlled(parent context.Context, addr, dnsServer string, localIP net.IP, control func(string, string, syscall.RawConn) error) (*net.UDPAddr, []net.IP, error) {
+	return resolveUDPAddrAllWithSource(parent, addr, dnsServer, localIP, control, nil)
+}
+
+func resolveUDPAddrAllWithSource(parent context.Context, addr, dnsServer string, localIP net.IP, control func(string, string, syscall.RawConn) error, sourceIP func(net.IP) (net.IP, error)) (*net.UDPAddr, []net.IP, error) {
 	if dnsServer == "" {
-		if control != nil {
+		if control != nil || sourceIP != nil {
 			host, _, err := net.SplitHostPort(addr)
 			if err != nil {
 				return nil, nil, err
@@ -206,11 +232,19 @@ func resolveUDPAddrAllControlled(parent context.Context, addr, dnsServer string,
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 			d := net.Dialer{Control: control}
-			if control != nil && localIP != nil && !localIP.IsUnspecified() {
-				if network == "tcp" {
-					d.LocalAddr = &net.TCPAddr{IP: localIP}
+			if control != nil || sourceIP != nil {
+				host, _, err := net.SplitHostPort(dnsServer)
+				if err != nil || net.ParseIP(host) == nil {
+					return nil, errors.New("selected network requires a literal DNS endpoint")
+				}
+				selected, err := selectSourceIP(localIP, net.ParseIP(host), sourceIP)
+				if err != nil {
+					return nil, err
+				}
+				if strings.HasPrefix(network, "tcp") {
+					d.LocalAddr = &net.TCPAddr{IP: selected}
 				} else {
-					d.LocalAddr = &net.UDPAddr{IP: localIP}
+					d.LocalAddr = &net.UDPAddr{IP: selected}
 				}
 			}
 			return d.DialContext(ctx, network, dnsServer)
@@ -232,7 +266,7 @@ func resolveUDPAddrAllControlled(parent context.Context, addr, dnsServer string,
 		if cand.IP == nil {
 			continue
 		}
-		if localIP != nil && !localIP.IsUnspecified() && (localIP.To4() != nil) != (cand.IP.To4() != nil) {
+		if _, err := selectSourceIP(localIP, cand.IP, sourceIP); err != nil {
 			continue
 		}
 		remoteIPs = append(remoteIPs, cand.IP)

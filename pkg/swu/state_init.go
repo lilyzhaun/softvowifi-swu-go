@@ -98,7 +98,7 @@ func (s *Session) buildIKESAInitPacket() ([]byte, error) {
 			localPort = lp.LocalPort()
 		}
 	}
-	remoteIP := net.ParseIP(s.cfg.EpDGAddr).To4()
+	remoteIP := natIP(net.ParseIP(s.cfg.EpDGAddr))
 	remotePort := s.cfg.EpDGPort
 	if remotePort == 0 {
 		remotePort = 500
@@ -110,20 +110,18 @@ func (s *Session) buildIKESAInitPacket() ([]byte, error) {
 		RemotePort() int
 	}); ok {
 		if rip := ep.RemoteIP(); rip != nil {
-			if v4 := rip.To4(); v4 != nil {
-				remoteIP = v4
-			}
+			remoteIP = natIP(rip)
 		}
 		if rp := ep.RemotePort(); rp != 0 {
 			remotePort = uint16(rp)
 		}
 	}
 
-	localIP := net.ParseIP(s.cfg.LocalAddr).To4()
+	localIP := natIP(net.ParseIP(s.cfg.LocalAddr))
 	if ep, ok := s.socket.(interface{ LocalIP() net.IP }); ok {
 		if lip := ep.LocalIP(); lip != nil {
-			if v4 := lip.To4(); v4 != nil && !v4.Equal(net.IPv4zero) {
-				localIP = v4
+			if !lip.IsUnspecified() {
+				localIP = natIP(lip)
 			}
 		}
 	}
@@ -249,7 +247,7 @@ func (s *Session) handleIKESAInitResp(data, offered []byte) error {
 				localPort = lp.LocalPort()
 			}
 		}
-		remoteIP := net.ParseIP(s.cfg.EpDGAddr).To4()
+		remoteIP := natIP(net.ParseIP(s.cfg.EpDGAddr))
 		remotePort := s.cfg.EpDGPort
 		if remotePort == 0 {
 			remotePort = 500
@@ -260,20 +258,18 @@ func (s *Session) handleIKESAInitResp(data, offered []byte) error {
 			RemotePort() int
 		}); ok {
 			if rip := ep.RemoteIP(); rip != nil {
-				if v4 := rip.To4(); v4 != nil {
-					remoteIP = v4
-				}
+				remoteIP = natIP(rip)
 			}
 			if rp := ep.RemotePort(); rp != 0 {
 				remotePort = uint16(rp)
 			}
 		}
 
-		localIP := net.ParseIP(s.cfg.LocalAddr).To4()
+		localIP := natIP(net.ParseIP(s.cfg.LocalAddr))
 		if ep, ok := s.socket.(interface{ LocalIP() net.IP }); ok {
 			if lip := ep.LocalIP(); lip != nil {
-				if v4 := lip.To4(); v4 != nil && !v4.Equal(net.IPv4zero) {
-					localIP = v4
+				if !lip.IsUnspecified() {
+					localIP = natIP(lip)
 				}
 			}
 		}

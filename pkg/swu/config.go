@@ -1,6 +1,7 @@
 package swu
 
 import (
+	"net"
 	"net/netip"
 	"syscall"
 
@@ -17,6 +18,9 @@ type Config struct {
 	// SocketControl binds both DNS and the outer UDP/ESP socket before bind or
 	// traffic. A failed selected network never retries without this control.
 	SocketControl func(network, address string, raw syscall.RawConn) error
+	// SourceIP selects a local address owned by the bound network for each
+	// actual DNS or ePDG destination. Nil preserves the fixed LocalAddr policy.
+	SourceIP func(remote net.IP) (net.IP, error)
 
 	SIM          sim.SIMProvider
 	EnableDriver bool // 是否创建 TUN 和路由 (需要 root)
