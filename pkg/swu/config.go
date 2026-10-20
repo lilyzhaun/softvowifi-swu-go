@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"syscall"
 
+	"github.com/1239t/swu-go/pkg/ipsec"
 	"github.com/1239t/swu-go/pkg/sim"
 )
 
@@ -21,6 +22,10 @@ type Config struct {
 	// SourceIP selects a local address owned by the bound network for each
 	// actual DNS or ePDG destination. Nil preserves the fixed LocalAddr policy.
 	SourceIP func(remote net.IP) (net.IP, error)
+	// SocketObserver receives synchronous transport metadata on the session
+	// context. Callbacks must be concurrency-safe, prompt, and de-identify any
+	// addresses before persistence. Nil leaves socket behavior unchanged.
+	SocketObserver ipsec.SocketObserver
 
 	SIM          sim.SIMProvider
 	EnableDriver bool // 是否创建 TUN 和路由 (需要 root)

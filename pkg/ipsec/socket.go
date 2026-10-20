@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,174 @@ import (
 	"github.com/1239t/swu-go/pkg/logger"
 )
 
+type SocketRole uint8
+
+const (
+	SocketRoleDNS SocketRole = iota + 1
+	SocketRoleOuter
+)
+
+type SocketPhase uint8
+
+const (
+	SocketPhaseDial SocketPhase = iota + 1
+	SocketPhaseWrite
+	SocketPhaseRead
+)
+
+type SocketResult uint8
+
+const (
+	SocketResultStarted SocketResult = iota + 1
+	SocketResultSuccess
+	SocketResultFailure
+)
+
+// SocketCause is a fixed classification, never an error message or protocol data.
+type SocketCause uint8
+
+const (
+	SocketCauseNone SocketCause = iota
+	SocketCauseCanceled
+	SocketCauseTimeout
+	SocketCauseClosed
+	SocketCausePermission
+	SocketCauseRefused
+	SocketCauseUnreachable
+	SocketCauseAddressInUse
+	SocketCauseAddressUnavailable
+	SocketCauseOther
+)
+
+// SocketEvent contains only transport metadata. Invalid addresses mean unknown;
+// DNS response receipt does not establish a valid answer or protocol acceptance.
+type SocketEvent struct {
+	Role   SocketRole
+	Phase  SocketPhase
+	Result SocketResult
+	Remote netip.AddrPort
+	Source netip.Addr
+	Bytes  int
+	Cause  SocketCause
+}
+
+// SocketObserver runs synchronously on the calling I/O goroutine, may be called
+// concurrently, and must return promptly. The library never logs these events.
+// Consumers must de-identify addresses before any persistence or transmission.
+type SocketObserver func(context.Context, SocketEvent)
+
+func socketCause(err error) SocketCause {
+	if err == nil {
+		return SocketCauseNone
+	}
+	switch {
+	case errors.Is(err, context.Canceled):
+		return SocketCauseCanceled
+	case errors.Is(err, net.ErrClosed):
+		return SocketCauseClosed
+	case errors.Is(err, context.DeadlineExceeded):
+		return SocketCauseTimeout
+	case errors.Is(err, syscall.EPERM), errors.Is(err, syscall.EACCES):
+		return SocketCausePermission
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return SocketCauseRefused
+	case errors.Is(err, syscall.ENETUNREACH), errors.Is(err, syscall.EHOSTUNREACH):
+		return SocketCauseUnreachable
+	case errors.Is(err, syscall.EADDRINUSE):
+		return SocketCauseAddressInUse
+	case errors.Is(err, syscall.EADDRNOTAVAIL):
+		return SocketCauseAddressUnavailable
+	}
+	var timeout net.Error
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		return SocketCauseTimeout
+	}
+	return SocketCauseOther
+}
+
+func socketEndpoint(addr net.Addr) netip.AddrPort {
+	var endpoint netip.AddrPort
+	switch addr := addr.(type) {
+	case *net.UDPAddr:
+		if addr != nil {
+			endpoint = addr.AddrPort()
+		}
+	case *net.TCPAddr:
+		if addr != nil {
+			endpoint = addr.AddrPort()
+		}
+	}
+	if !endpoint.IsValid() {
+		return netip.AddrPort{}
+	}
+	return netip.AddrPortFrom(endpoint.Addr().Unmap(), endpoint.Port())
+}
+
+func observeSocket(ctx context.Context, observer SocketObserver, role SocketRole, phase SocketPhase, result SocketResult, remote netip.AddrPort, source netip.Addr, n int, err error) {
+	if observer != nil {
+		observer(ctx, SocketEvent{Role: role, Phase: phase, Result: result, Remote: remote, Source: source, Bytes: n, Cause: socketCause(err)})
+	}
+}
+
+func observeSocketIO(ctx context.Context, observer SocketObserver, role SocketRole, phase SocketPhase, remote, local net.Addr, n int, err error) {
+	if observer == nil || (n == 0 && err == nil) {
+		return
+	}
+	result := SocketResultSuccess
+	if err != nil {
+		result = SocketResultFailure
+	}
+	observeSocket(ctx, observer, role, phase, result, socketEndpoint(remote), socketEndpoint(local).Addr(), n, err)
+}
+
+type observedDNSConn struct {
+	net.Conn
+	ctx      context.Context
+	observer SocketObserver
+}
+
+func (c *observedDNSConn) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	observeSocketIO(c.ctx, c.observer, SocketRoleDNS, SocketPhaseRead, c.Conn.RemoteAddr(), c.Conn.LocalAddr(), n, err)
+	return n, err
+}
+
+func (c *observedDNSConn) Write(b []byte) (int, error) {
+	n, err := c.Conn.Write(b)
+	observeSocketIO(c.ctx, c.observer, SocketRoleDNS, SocketPhaseWrite, c.Conn.RemoteAddr(), c.Conn.LocalAddr(), n, err)
+	return n, err
+}
+
+// Resolver.exchange uses the presence of net.PacketConn to select UDP framing.
+// Preserve that capability only when the original connection implements it.
+type observedDNSPacketConn struct {
+	*observedDNSConn
+	packet net.PacketConn
+}
+
+func (c *observedDNSPacketConn) ReadFrom(b []byte) (int, net.Addr, error) {
+	n, remote, err := c.packet.ReadFrom(b)
+	observeSocketIO(c.ctx, c.observer, SocketRoleDNS, SocketPhaseRead, remote, c.Conn.LocalAddr(), n, err)
+	return n, remote, err
+}
+
+func (c *observedDNSPacketConn) WriteTo(b []byte, remote net.Addr) (int, error) {
+	n, err := c.packet.WriteTo(b, remote)
+	observeSocketIO(c.ctx, c.observer, SocketRoleDNS, SocketPhaseWrite, remote, c.Conn.LocalAddr(), n, err)
+	return n, err
+}
+
+func observeDNSConn(ctx context.Context, conn net.Conn, observer SocketObserver) net.Conn {
+	if observer == nil {
+		return conn
+	}
+	wrapped := &observedDNSConn{Conn: conn, ctx: ctx, observer: observer}
+	if packet, ok := conn.(net.PacketConn); ok {
+		return &observedDNSPacketConn{observedDNSConn: wrapped, packet: packet}
+	}
+	return wrapped
+}
+
 type SocketManager struct {
 	Conn         *net.UDPConn
 	LocalAddr    *net.UDPAddr
@@ -25,6 +194,8 @@ type SocketManager struct {
 	remoteIdx    uint32
 	ikeEnvelopes chan IKEEnvelope
 	useEnvelopes atomic.Bool
+	ctx          context.Context
+	observer     SocketObserver
 
 	IKEChan   chan []byte
 	ESPChan   chan []byte
@@ -124,12 +295,17 @@ func NewSocketManagerWithControl(ctx context.Context, local, remote, dnsServer s
 // NewSocketManagerWithSource keeps network control on every socket while
 // selecting DNS and ePDG sources independently within that same network.
 func NewSocketManagerWithSource(ctx context.Context, local, remote, dnsServer string, control func(string, string, syscall.RawConn) error, sourceIP func(net.IP) (net.IP, error)) (*SocketManager, error) {
+	return NewSocketManagerWithObserver(ctx, local, remote, dnsServer, control, sourceIP, nil)
+}
+
+// NewSocketManagerWithObserver adds optional, context-bound transport observation.
+func NewSocketManagerWithObserver(ctx context.Context, local, remote, dnsServer string, control func(string, string, syscall.RawConn) error, sourceIP func(net.IP) (net.IP, error), observer SocketObserver) (*SocketManager, error) {
 	localHost, localPort, err := net.SplitHostPort(local)
 	if err != nil {
 		return nil, err
 	}
 	localIP := net.ParseIP(localHost)
-	rAddr, remoteIPs, err := resolveUDPAddrAllWithSource(ctx, remote, dnsServer, localIP, control, sourceIP)
+	rAddr, remoteIPs, err := resolveUDPAddrAllWithObserver(ctx, remote, dnsServer, localIP, control, sourceIP, observer)
 	if err != nil {
 		return nil, err
 	}
@@ -163,8 +339,10 @@ func NewSocketManagerWithSource(ctx context.Context, local, remote, dnsServer st
 	}
 
 	listener := net.ListenConfig{Control: control}
+	observeSocket(ctx, observer, SocketRoleOuter, SocketPhaseDial, SocketResultStarted, socketEndpoint(rAddr), netip.Addr{}, 0, nil)
 	packet, err := listener.ListenPacket(ctx, network, lAddr.String())
 	if err != nil {
+		observeSocket(ctx, observer, SocketRoleOuter, SocketPhaseDial, SocketResultFailure, socketEndpoint(rAddr), netip.Addr{}, 0, err)
 		return nil, err
 	}
 	conn := packet.(*net.UDPConn)
@@ -172,12 +350,15 @@ func NewSocketManagerWithSource(ctx context.Context, local, remote, dnsServer st
 	if actual, ok := conn.LocalAddr().(*net.UDPAddr); ok {
 		lAddr = actual
 	}
+	observeSocket(ctx, observer, SocketRoleOuter, SocketPhaseDial, SocketResultSuccess, socketEndpoint(rAddr), socketEndpoint(conn.LocalAddr()).Addr(), 0, nil)
 
 	return &SocketManager{
 		Conn:         conn,
 		LocalAddr:    lAddr,
 		RemoteAddr:   rAddr,
 		remoteIPs:    remoteIPs,
+		ctx:          ctx,
+		observer:     observer,
 		IKEChan:      make(chan []byte, 100),
 		ikeEnvelopes: make(chan IKEEnvelope, 100),
 		ESPChan:      make(chan []byte, 1000), // 数据平面的更高缓冲区
@@ -195,6 +376,10 @@ func resolveUDPAddrAllControlled(parent context.Context, addr, dnsServer string,
 }
 
 func resolveUDPAddrAllWithSource(parent context.Context, addr, dnsServer string, localIP net.IP, control func(string, string, syscall.RawConn) error, sourceIP func(net.IP) (net.IP, error)) (*net.UDPAddr, []net.IP, error) {
+	return resolveUDPAddrAllWithObserver(parent, addr, dnsServer, localIP, control, sourceIP, nil)
+}
+
+func resolveUDPAddrAllWithObserver(parent context.Context, addr, dnsServer string, localIP net.IP, control func(string, string, syscall.RawConn) error, sourceIP func(net.IP) (net.IP, error), observer SocketObserver) (*net.UDPAddr, []net.IP, error) {
 	if dnsServer == "" {
 		if control != nil || sourceIP != nil {
 			host, _, err := net.SplitHostPort(addr)
@@ -247,7 +432,26 @@ func resolveUDPAddrAllWithSource(parent context.Context, addr, dnsServer string,
 					d.LocalAddr = &net.UDPAddr{IP: selected}
 				}
 			}
-			return d.DialContext(ctx, network, dnsServer)
+			if observer == nil {
+				return d.DialContext(ctx, network, dnsServer)
+			}
+			// Do not use Resolver's address argument: it can be a system-resolver
+			// placeholder, unrelated to the endpoint actually passed to DialContext.
+			remote, _ := netip.ParseAddrPort(dnsServer)
+			if remote.IsValid() {
+				remote = netip.AddrPortFrom(remote.Addr().Unmap(), remote.Port())
+			}
+			// Resolver may detach deadlines and discard values after cancellation.
+			// Keep observation bound to the original caller, not that internal ctx;
+			// the actual DialContext and its deadlines remain entirely unchanged.
+			observeSocket(parent, observer, SocketRoleDNS, SocketPhaseDial, SocketResultStarted, remote, netip.Addr{}, 0, nil)
+			conn, err := d.DialContext(ctx, network, dnsServer)
+			if err != nil {
+				observeSocket(parent, observer, SocketRoleDNS, SocketPhaseDial, SocketResultFailure, remote, netip.Addr{}, 0, err)
+				return conn, err
+			}
+			observeSocket(parent, observer, SocketRoleDNS, SocketPhaseDial, SocketResultSuccess, socketEndpoint(conn.RemoteAddr()), socketEndpoint(conn.LocalAddr()).Addr(), 0, nil)
+			return observeDNSConn(parent, conn, observer), nil
 		},
 	}
 	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
@@ -320,6 +524,7 @@ func (s *SocketManager) readLoop() {
 
 	for {
 		n, addr, err := s.Conn.ReadFromUDP(buf)
+		observeSocketIO(s.ctx, s.observer, SocketRoleOuter, SocketPhaseRead, addr, s.Conn.LocalAddr(), n, err)
 		if err != nil {
 			// Log checking if closed
 			return
@@ -406,7 +611,8 @@ func (s *SocketManager) SendIKE(data []byte) error {
 	if dst.Port == 4500 {
 		packet = append([]byte{0, 0, 0, 0}, data...)
 	}
-	_, err := s.Conn.WriteToUDP(packet, &dst)
+	n, err := s.Conn.WriteToUDP(packet, &dst)
+	observeSocketIO(s.ctx, s.observer, SocketRoleOuter, SocketPhaseWrite, &dst, s.Conn.LocalAddr(), n, err)
 	return err
 }
 
@@ -418,6 +624,7 @@ func (s *SocketManager) SendESP(data []byte) error {
 	// ESP over UDP 不添加 Non-ESP Marker (RFC 3948)
 	// 接收方通过 SPI != 0 来区分 ESP 和 IKE
 	n, err := s.Conn.WriteToUDP(packet, &dst)
+	observeSocketIO(s.ctx, s.observer, SocketRoleOuter, SocketPhaseWrite, &dst, s.Conn.LocalAddr(), n, err)
 	if err != nil {
 		logger.Warn("ESP 发送失败", logger.Err(err), logger.String("dst", dst.String()), logger.Int("len", len(packet)))
 	} else if n != len(packet) {
@@ -430,7 +637,8 @@ func (s *SocketManager) SendNATKeepalive() error {
 	s.remoteMu.Lock()
 	dst := *s.RemoteAddr
 	s.remoteMu.Unlock()
-	_, err := s.Conn.WriteToUDP([]byte{0xff}, &dst)
+	n, err := s.Conn.WriteToUDP([]byte{0xff}, &dst)
+	observeSocketIO(s.ctx, s.observer, SocketRoleOuter, SocketPhaseWrite, &dst, s.Conn.LocalAddr(), n, err)
 	if err != nil {
 		// 捕捉 operation not permitted 这类 OS 级阻塞
 		logger.Warn("NAT keepalive 发送遭遇操作系统级拦截/拒绝", logger.Err(err), logger.String("dst", dst.String()), logger.String("local", s.LocalAddrString()))
