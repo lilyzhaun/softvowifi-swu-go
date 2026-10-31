@@ -55,11 +55,12 @@ func (s *Session) buildIKESAInitPacket() ([]byte, error) {
 	if s.sendCookie && len(s.cookie) > 0 && s.DH != nil && len(s.initProposals) > 0 {
 		proposals = s.initProposals
 	} else {
-		dhGroup, err := effectiveIKEDHGroup(s.cfg)
-		if err != nil {
+		if err := s.prepareProposalPolicy(); err != nil {
 			return nil, err
 		}
+		dhGroup := s.proposalPolicy.dh
 		if s.DH == nil || s.DH.Group != dhGroup {
+			var err error
 			s.DH, err = crypto.NewDiffieHellman(dhGroup)
 			if err != nil {
 				return nil, err
@@ -69,28 +70,7 @@ func (s *Session) buildIKESAInitPacket() ([]byte, error) {
 			}
 		}
 
-		layout := ""
-		var initialNumber uint8
-		if s.cfg != nil {
-			layout = s.cfg.IKEProposalLayout
-			initialNumber = s.cfg.InitialIKEProposalNumber
-		}
-		proposals = ikeProposalsForDHGroup(layout, ikev2.AlgorithmType(dhGroup))
-		if initialNumber != 0 {
-			var chosen *ikev2.Proposal
-			for _, proposal := range proposals {
-				if proposal.ProposalNum == initialNumber && len(proposal.Transforms) == 4 {
-					copy := *proposal
-					copy.ProposalNum = 1
-					chosen = &copy
-					break
-				}
-			}
-			if chosen == nil {
-				return nil, errors.New("initial IKE proposal is not a complete original offer")
-			}
-			proposals = []*ikev2.Proposal{chosen}
-		}
+		proposals = policyProposalsWithSPI(s.proposalPolicy.ike, nil)
 		s.initProposals = proposals
 	}
 

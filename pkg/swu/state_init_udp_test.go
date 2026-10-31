@@ -27,8 +27,10 @@ func Test_ConnectProtectsAuth_whenUDPPeerSelectsFourthSuite(t *testing.T) {
 		mutate func([]byte) []byte
 		single uint8
 		hint   bool
+		policy bool
 	}{
 		{name: "fourth suite"},
+		{name: "explicit fourth suite and GCM128 Child", policy: true},
 		{name: "unauthenticated KE hint then fourth suite", hint: true},
 		{name: "fresh single fourth suite", single: 4},
 		{name: "cross proposal rejected", reject: true},
@@ -57,6 +59,10 @@ func Test_ConnectProtectsAuth_whenUDPPeerSelectsFourthSuite(t *testing.T) {
 				}))
 			}
 			sess.cfg.InitialIKEProposalNumber = scenario.single
+			if scenario.policy {
+				sess.cfg.IKEProposals = []string{policyIKE256}
+				sess.cfg.ESPProposals = []string{policyESP128}
+			}
 			sess.cfg.LocalAddr = "127.0.0.1"
 			sess.cfg.LocalPort = 0
 			sess.cfg.EpDGAddr = "127.0.0.1"
@@ -75,7 +81,7 @@ func Test_ConnectProtectsAuth_whenUDPPeerSelectsFourthSuite(t *testing.T) {
 			offered := bytes.Clone(buffer[:count])
 			sa, ke, _ := decodeInitSA(t, offered)
 			wantProposals := 4
-			if scenario.single != 0 {
+			if scenario.single != 0 || scenario.policy {
 				wantProposals = 1
 			}
 			if len(sa.Proposals) != wantProposals {
@@ -219,8 +225,28 @@ func Test_ConnectProtectsAuth_whenUDPPeerSelectsFourthSuite(t *testing.T) {
 			receiver.localResponder = true
 			receiver.EncAlg, receiver.IntegAlg = sess.EncAlg, sess.IntegAlg
 			receiver.Keys = &ikev2.IKESAKeys{SK_ei: keys[96:128], SK_ai: keys[32:64]}
-			if _, _, err := receiver.decryptAndParse(auth); err != nil {
+			_, payloads, err := receiver.decryptAndParse(auth)
+			if err != nil {
 				t.Fatalf("valid protected AUTH: %v", err)
+			}
+			if scenario.policy {
+				found := false
+				for _, payload := range payloads {
+					if sa, ok := payload.(*ikev2.EncryptedPayloadSA); ok {
+						found = true
+						if len(sa.Proposals) != 1 || len(sa.Proposals[0].SPI) != 4 || len(sa.Proposals[0].Transforms) != 2 {
+							t.Fatal("protected Child offer did not consume explicit policy")
+						}
+						p := sa.Proposals[0]
+						if p.Transforms[0].ID != ikev2.ENCR_AES_GCM_16 || p.Transforms[0].Attributes[0].Val != 128 ||
+							p.Transforms[1].Type != ikev2.TransformTypeESN || p.Transforms[1].ID != 0 {
+							t.Fatal("protected Child offer changed the requested complete suite")
+						}
+					}
+				}
+				if !found {
+					t.Fatal("protected AUTH omitted Child offer")
+				}
 			}
 			auth[len(auth)-1] ^= 1
 			if _, _, err := receiver.decryptAndParse(auth); err == nil {
