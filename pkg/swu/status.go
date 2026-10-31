@@ -1,6 +1,51 @@
 package swu
 
-import "net"
+import (
+	"context"
+	"net"
+)
+
+// NegotiatedSecurity contains only the current authenticated transform tuples.
+// It is not a kernel-state readback or proof of application traffic.
+type NegotiatedSecurity struct {
+	IKE   NegotiatedIKESecurity
+	Child NegotiatedChildSecurity
+}
+
+type NegotiatedIKESecurity struct {
+	Encryption uint16
+	KeyBits    int
+	Integrity  uint16
+	PRF        uint16
+	DH         uint16
+}
+
+type NegotiatedChildSecurity struct {
+	Encryption uint16
+	KeyBits    int
+	Integrity  uint16
+	ESN        bool
+	// PFS is the additional Child DH group. The current authenticated and
+	// rekey selectors reject additional DH, so zero means no additional PFS.
+	PFS uint16
+}
+
+// childMu protects publication and retirement. IKE rekey requires the same
+// complete tuple; Child rekey can select another tuple under that same lock.
+type sessionSecurity struct {
+	owner context.Context
+	ike   NegotiatedIKESecurity
+}
+
+// Called only by Connect after final AUTH and any enabled dataplane setup.
+func (s *Session) publishNegotiatedSecurity() {
+	s.childMu.Lock()
+	defer s.childMu.Unlock()
+	s.security = &sessionSecurity{owner: s.ctx, ike: NegotiatedIKESecurity{
+		Encryption: s.ikeEncrID, KeyBits: s.ikeEncrKeyLenBits,
+		Integrity: s.ikeIntegID, PRF: s.ikePRFID, DH: s.ikeDHID,
+	}}
+}
 
 type SessionSnapshot struct {
 	Established bool
@@ -15,6 +60,10 @@ type SessionSnapshot struct {
 
 	PCSCFv4 []net.IP
 	PCSCFv6 []net.IP
+
+	// Security is nil until authentication and dataplane readiness, and as
+	// soon as the authenticated owner is canceled or retired.
+	Security *NegotiatedSecurity
 }
 
 func (s *Session) Snapshot() SessionSnapshot {
@@ -47,6 +96,15 @@ func (s *Session) Snapshot() SessionSnapshot {
 		}
 	} else {
 		// 无驱动模式下，只看 SA
+	}
+	if out.Established && s.security != nil && s.security.owner.Err() == nil {
+		out.Security = &NegotiatedSecurity{
+			IKE: s.security.ike,
+			Child: NegotiatedChildSecurity{
+				Encryption: s.childEncrID, KeyBits: s.childEncrKeyLenBits,
+				Integrity: s.childIntegID, ESN: s.childESN,
+			},
+		}
 	}
 	if s.cpConfig != nil {
 		if len(s.cpConfig.IPv4Addresses) > 0 {
