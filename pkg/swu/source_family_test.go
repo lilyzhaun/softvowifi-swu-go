@@ -17,7 +17,7 @@ func setFamilySource(cfg *Config, source func(net.IP) (net.IP, error)) {
 	cfg.SourceIP = source
 }
 
-func familyDNS(t *testing.T, network, host string, answer net.IP) (string, *atomic.Int32) {
+func familyDNS(t *testing.T, network, host string, answers ...net.IP) (string, *atomic.Int32) {
 	t.Helper()
 	conn, err := net.ListenUDP(network, &net.UDPAddr{IP: net.ParseIP(host)})
 	if err != nil {
@@ -48,14 +48,16 @@ func familyDNS(t *testing.T, network, host string, answer net.IP) (string, *atom
 			packet := buf[:end+5]
 			packet[2], packet[3] = 0x81, 0x80
 			clear(packet[6:12])
-			ip, typ := answer.To4(), byte(1)
-			if ip == nil {
-				ip, typ = answer.To16(), 28
-			}
-			if qtype == uint16(typ) {
-				packet[7] = 1
-				packet = append(packet, 0xc0, 0x0c, 0, typ, 0, 1, 0, 0, 0, 30, 0, byte(len(ip)))
-				packet = append(packet, ip...)
+			for _, answer := range answers {
+				ip, typ := answer.To4(), byte(1)
+				if ip == nil {
+					ip, typ = answer.To16(), 28
+				}
+				if qtype == uint16(typ) {
+					packet[7]++
+					packet = append(packet, 0xc0, 0x0c, 0, typ, 0, 1, 0, 0, 0, 30, 0, byte(len(ip)))
+					packet = append(packet, ip...)
+				}
 			}
 			if _, err := conn.WriteToUDP(packet, peer); err != nil {
 				return

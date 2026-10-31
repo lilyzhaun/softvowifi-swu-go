@@ -160,6 +160,8 @@ type Session struct {
 	childHardExpiry saHardExpiry
 	dpdStart        sync.Once
 
+	remoteAddressFamily ipsec.AddressFamilyPolicy
+
 	// RFC 5723: Session Resumption
 	resumeTicket []byte // ePDG 下发的 Ticket_Opaque
 	resumeOldSKd []byte // 存放被销毁前一任 IKE_SA 的引流密钥 SK_d
@@ -247,6 +249,8 @@ func NewSession(cfg *Config, l *zap.Logger) *Session {
 		resumeTicket:      cfg.ResumeTicket, // 从外级上下文挂载可能传下来的“前世”车票
 		resumeOldSKd:      cfg.ResumeOldSKd,
 		fastReauthCtx:     initFastReauthCtx(cfg),
+
+		remoteAddressFamily: cfg.RemoteAddressFamily,
 	}
 }
 
@@ -318,6 +322,9 @@ func (s *Session) connectOnce() (result error) {
 	s.xfrmOutputMark = 0
 	s.resetAKAIdentity()
 	s.resetIKEAuthTranscripts()
+	if err := s.validateRemoteAddressPolicy(); err != nil {
+		return err
+	}
 	if err := s.prepareProposalPolicy(); err != nil {
 		return err
 	}
@@ -345,10 +352,10 @@ func (s *Session) connectOnce() (result error) {
 	if s.cfg.TransportFactory != nil {
 		s.socket, err = s.cfg.TransportFactory(localBind, remoteAddr)
 	} else {
-		s.socket, err = ipsec.NewSocketManagerWithObserver(s.ctx, localBind, remoteAddr, s.cfg.DNSServer, s.cfg.SocketControl, s.cfg.SourceIP, s.cfg.SocketObserver)
+		s.socket, err = ipsec.NewSocketManagerWithAddressFamily(s.ctx, localBind, remoteAddr, s.cfg.DNSServer, s.cfg.SocketControl, s.cfg.SourceIP, s.cfg.SocketObserver, s.remoteAddressFamily)
 		if err != nil && localPort != 0 && errors.Is(err, syscall.EADDRINUSE) {
 			localBind = net.JoinHostPort(s.cfg.LocalAddr, "0")
-			s.socket, err = ipsec.NewSocketManagerWithObserver(s.ctx, localBind, remoteAddr, s.cfg.DNSServer, s.cfg.SocketControl, s.cfg.SourceIP, s.cfg.SocketObserver)
+			s.socket, err = ipsec.NewSocketManagerWithAddressFamily(s.ctx, localBind, remoteAddr, s.cfg.DNSServer, s.cfg.SocketControl, s.cfg.SourceIP, s.cfg.SocketObserver, s.remoteAddressFamily)
 		}
 	}
 	if err != nil {

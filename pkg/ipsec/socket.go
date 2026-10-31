@@ -300,12 +300,25 @@ func NewSocketManagerWithSource(ctx context.Context, local, remote, dnsServer st
 
 // NewSocketManagerWithObserver adds optional, context-bound transport observation.
 func NewSocketManagerWithObserver(ctx context.Context, local, remote, dnsServer string, control func(string, string, syscall.RawConn) error, sourceIP func(net.IP) (net.IP, error), observer SocketObserver) (*SocketManager, error) {
+	return NewSocketManagerWithAddressFamily(ctx, local, remote, dnsServer, control, sourceIP, observer, "")
+}
+
+// NewSocketManagerWithAddressFamily chooses only compatible remote candidates;
+// DNS binding, observation, cancellation and same-socket rotation stay separate.
+func NewSocketManagerWithAddressFamily(ctx context.Context, local, remote, dnsServer string, control func(string, string, syscall.RawConn) error, sourceIP func(net.IP) (net.IP, error), observer SocketObserver, family AddressFamilyPolicy) (*SocketManager, error) {
 	localHost, localPort, err := net.SplitHostPort(local)
 	if err != nil {
 		return nil, err
 	}
+	remoteHost, _, err := net.SplitHostPort(remote)
+	if err != nil {
+		return nil, err
+	}
+	if err := family.ValidateAddress(remoteHost); err != nil {
+		return nil, err
+	}
 	localIP := net.ParseIP(localHost)
-	rAddr, remoteIPs, err := resolveUDPAddrAllWithObserver(ctx, remote, dnsServer, localIP, control, sourceIP, observer)
+	rAddr, remoteIPs, err := resolveUDPAddrAllWithFamily(ctx, remote, dnsServer, localIP, control, sourceIP, observer, family)
 	if err != nil {
 		return nil, err
 	}
@@ -380,6 +393,10 @@ func resolveUDPAddrAllWithSource(parent context.Context, addr, dnsServer string,
 }
 
 func resolveUDPAddrAllWithObserver(parent context.Context, addr, dnsServer string, localIP net.IP, control func(string, string, syscall.RawConn) error, sourceIP func(net.IP) (net.IP, error), observer SocketObserver) (*net.UDPAddr, []net.IP, error) {
+	return resolveUDPAddrAllWithFamily(parent, addr, dnsServer, localIP, control, sourceIP, observer, "")
+}
+
+func resolveUDPAddrAllWithFamily(parent context.Context, addr, dnsServer string, localIP net.IP, control func(string, string, syscall.RawConn) error, sourceIP func(net.IP) (net.IP, error), observer SocketObserver, family AddressFamilyPolicy) (*net.UDPAddr, []net.IP, error) {
 	if dnsServer == "" {
 		if control != nil || sourceIP != nil {
 			host, _, err := net.SplitHostPort(addr)
@@ -390,14 +407,16 @@ func resolveUDPAddrAllWithObserver(parent context.Context, addr, dnsServer strin
 				return nil, nil, errors.New("selected network requires an explicit DNS endpoint")
 			}
 		}
-		r, err := net.ResolveUDPAddr("udp", addr)
-		if err != nil {
-			return nil, nil, err
+		if family == "" {
+			r, err := net.ResolveUDPAddr("udp", addr)
+			if err != nil {
+				return nil, nil, err
+			}
+			if r.IP != nil {
+				return r, []net.IP{r.IP}, nil
+			}
+			return r, nil, nil
 		}
-		if r.IP != nil {
-			return r, []net.IP{r.IP}, nil
-		}
-		return r, nil, nil
 	}
 
 	host, portStr, err := net.SplitHostPort(addr)
@@ -413,46 +432,49 @@ func resolveUDPAddrAllWithObserver(parent context.Context, addr, dnsServer strin
 		return &net.UDPAddr{IP: ip, Port: port}, []net.IP{ip}, nil
 	}
 
-	res := &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-			d := net.Dialer{Control: control}
-			if control != nil || sourceIP != nil {
-				host, _, err := net.SplitHostPort(dnsServer)
-				if err != nil || net.ParseIP(host) == nil {
-					return nil, errors.New("selected network requires a literal DNS endpoint")
+	res := net.DefaultResolver
+	if dnsServer != "" {
+		res = &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				d := net.Dialer{Control: control}
+				if control != nil || sourceIP != nil {
+					host, _, err := net.SplitHostPort(dnsServer)
+					if err != nil || net.ParseIP(host) == nil {
+						return nil, errors.New("selected network requires a literal DNS endpoint")
+					}
+					selected, err := selectSourceIP(localIP, net.ParseIP(host), sourceIP)
+					if err != nil {
+						return nil, err
+					}
+					if strings.HasPrefix(network, "tcp") {
+						d.LocalAddr = &net.TCPAddr{IP: selected}
+					} else {
+						d.LocalAddr = &net.UDPAddr{IP: selected}
+					}
 				}
-				selected, err := selectSourceIP(localIP, net.ParseIP(host), sourceIP)
+				if observer == nil {
+					return d.DialContext(ctx, network, dnsServer)
+				}
+				// Do not use Resolver's address argument: it can be a system-resolver
+				// placeholder, unrelated to the endpoint actually passed to DialContext.
+				remote, _ := netip.ParseAddrPort(dnsServer)
+				if remote.IsValid() {
+					remote = netip.AddrPortFrom(remote.Addr().Unmap(), remote.Port())
+				}
+				// Resolver may detach deadlines and discard values after cancellation.
+				// Keep observation bound to the original caller, not that internal ctx;
+				// the actual DialContext and its deadlines remain entirely unchanged.
+				observeSocket(parent, observer, SocketRoleDNS, SocketPhaseDial, SocketResultStarted, remote, netip.Addr{}, 0, nil)
+				conn, err := d.DialContext(ctx, network, dnsServer)
 				if err != nil {
-					return nil, err
+					observeSocket(parent, observer, SocketRoleDNS, SocketPhaseDial, SocketResultFailure, remote, netip.Addr{}, 0, err)
+					return conn, err
 				}
-				if strings.HasPrefix(network, "tcp") {
-					d.LocalAddr = &net.TCPAddr{IP: selected}
-				} else {
-					d.LocalAddr = &net.UDPAddr{IP: selected}
-				}
-			}
-			if observer == nil {
-				return d.DialContext(ctx, network, dnsServer)
-			}
-			// Do not use Resolver's address argument: it can be a system-resolver
-			// placeholder, unrelated to the endpoint actually passed to DialContext.
-			remote, _ := netip.ParseAddrPort(dnsServer)
-			if remote.IsValid() {
-				remote = netip.AddrPortFrom(remote.Addr().Unmap(), remote.Port())
-			}
-			// Resolver may detach deadlines and discard values after cancellation.
-			// Keep observation bound to the original caller, not that internal ctx;
-			// the actual DialContext and its deadlines remain entirely unchanged.
-			observeSocket(parent, observer, SocketRoleDNS, SocketPhaseDial, SocketResultStarted, remote, netip.Addr{}, 0, nil)
-			conn, err := d.DialContext(ctx, network, dnsServer)
-			if err != nil {
-				observeSocket(parent, observer, SocketRoleDNS, SocketPhaseDial, SocketResultFailure, remote, netip.Addr{}, 0, err)
-				return conn, err
-			}
-			observeSocket(parent, observer, SocketRoleDNS, SocketPhaseDial, SocketResultSuccess, socketEndpoint(conn.RemoteAddr()), socketEndpoint(conn.LocalAddr()).Addr(), 0, nil)
-			return observeDNSConn(parent, conn, observer), nil
-		},
+				observeSocket(parent, observer, SocketRoleDNS, SocketPhaseDial, SocketResultSuccess, socketEndpoint(conn.RemoteAddr()), socketEndpoint(conn.LocalAddr()).Addr(), 0, nil)
+				return observeDNSConn(parent, conn, observer), nil
+			},
+		}
 	}
 	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 	defer cancel()
@@ -467,7 +489,7 @@ func resolveUDPAddrAllWithObserver(parent context.Context, addr, dnsServer strin
 
 	var remoteIPs []net.IP
 	for _, cand := range ips {
-		if cand.IP == nil {
+		if cand.IP == nil || !family.permits(cand.IP) {
 			continue
 		}
 		if _, err := selectSourceIP(localIP, cand.IP, sourceIP); err != nil {
@@ -476,12 +498,16 @@ func resolveUDPAddrAllWithObserver(parent context.Context, addr, dnsServer strin
 		remoteIPs = append(remoteIPs, cand.IP)
 	}
 	if len(remoteIPs) == 0 {
+		if family == AddressFamilyIPv4Only || family == AddressFamilyIPv6Only {
+			return nil, nil, ErrAddressFamilyMismatch
+		}
 		return nil, nil, errors.New("DNS returned no address matching selected local network family")
 	}
 
 	ip := remoteIPs[0]
+	preferIPv4 := family != AddressFamilyPreferIPv6 && family != AddressFamilyIPv6Only
 	for _, cand := range remoteIPs {
-		if cand.To4() != nil {
+		if (cand.To4() != nil) == preferIPv4 {
 			ip = cand
 			break
 		}

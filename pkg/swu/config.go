@@ -26,6 +26,10 @@ type Config struct {
 	// context. Callbacks must be concurrency-safe, prompt, and de-identify any
 	// addresses before persistence. Nil leaves socket behavior unchanged.
 	SocketObserver ipsec.SocketObserver
+	// RemoteAddressFamily is captured by NewSession and only constrains remote
+	// candidates. Empty preserves compatibility. Explicit policies require the
+	// built-in Connect transport; custom factories and MOBIKE reject them.
+	RemoteAddressFamily ipsec.AddressFamilyPolicy
 
 	SIM          sim.SIMProvider
 	EnableDriver bool // 是否创建 TUN 和路由 (需要 root)
