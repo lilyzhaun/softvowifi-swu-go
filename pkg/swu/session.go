@@ -66,6 +66,7 @@ type Session struct {
 	ChildSAsIn   map[uint32]*ipsec.SecurityAssociation
 	childMu      sync.RWMutex
 	retiredChild *peerChildRetirement // rekeyMu owns retirement and request replay.
+	security     *sessionSecurity     // Authenticated snapshot owner; childMu protects it.
 
 	childSPI            uint32
 	childDH             *crypto.DiffieHellman
@@ -304,6 +305,9 @@ func (s *Session) Connect(ctx context.Context) error {
 // connectOnce 执行一次完整的 IKE 连接流程
 func (s *Session) connectOnce() (result error) {
 	defer func() {
+		s.childMu.Lock()
+		s.security = nil
+		s.childMu.Unlock()
 		if cleanupErr := s.cleanupNetworkConfig(); cleanupErr != nil {
 			result = errors.Join(result, cleanupErr)
 		}
@@ -537,6 +541,9 @@ func (s *Session) connectOnce() (result error) {
 	s.renewChildHardExpiry(established)
 	s.startHardExpiry(&s.ikeHardExpiry, s.renewalPolicy.IKE.HardLifetime, SessionDownIKELifetime)
 	s.startHardExpiry(&s.childHardExpiry, s.renewalPolicy.Child.HardLifetime, SessionDownChildLifetime)
+	if !s.cfg.EnableDriver {
+		s.publishNegotiatedSecurity()
+	}
 	s.Logger.Info("会话已建立", logger.Duration("handshake", time.Since(handshakeStart)))
 
 	// 4. 设置 IPSec 数据平面
@@ -558,6 +565,7 @@ func (s *Session) connectOnce() (result error) {
 		if s.ctx.Err() != nil {
 			return context.Cause(s.ctx)
 		}
+		s.publishNegotiatedSecurity()
 		if s.cfg.OnReady != nil {
 			s.cfg.OnReady()
 		}
