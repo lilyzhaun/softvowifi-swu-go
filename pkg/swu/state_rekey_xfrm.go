@@ -44,6 +44,9 @@ func (s *Session) childRekeyXFRMConfigs(next childSARekey) (out, in driver.XFRMS
 		Ifid: s.xfrmIfID, ReplayWindow: s.cfg.ReplayWindow,
 		SADir: netlink.XFRM_SA_DIR_IN, ESN: next.esn,
 	}
+	if err := s.applyChildLifetimes(&out, &in); err != nil {
+		return out, in, nil, err
+	}
 	if isAEAD {
 		info, err := driver.IKEv2AlgToXFRMAead(next.encrID, next.keyBits)
 		if err != nil {

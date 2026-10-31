@@ -281,9 +281,13 @@ func (tm *TaskManager) checkTimeouts() {
 				// 惩罚增长并执行再次空投
 				msg.RetryCount++
 
-				msg.NextTimeout = time.Duration(float64(msg.NextTimeout) * tm.config.BackoffFactor)
-				if tm.config.MaxTimeout > 0 && msg.NextTimeout > tm.config.MaxTimeout {
+				next := float64(msg.NextTimeout) * tm.config.BackoffFactor
+				// Apply the explicit cap before the float-to-Duration conversion;
+				// an overflowing intermediate must not become a negative delay.
+				if tm.config.MaxTimeout > 0 && next >= float64(tm.config.MaxTimeout) {
 					msg.NextTimeout = tm.config.MaxTimeout
+				} else {
+					msg.NextTimeout = time.Duration(next)
 				}
 				msg.Deadline = now.Add(msg.NextTimeout)
 

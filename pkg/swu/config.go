@@ -45,6 +45,10 @@ type Config struct {
 	// 默认 0 (不主动重认证，仅 Rekey)
 	ReauthInterval int
 
+	// RenewalPolicy captures independent SA, liveness and retransmission timing
+	// at first use. Nil preserves the legacy schedule; see docs/renewal-policy.md.
+	RenewalPolicy *RenewalPolicy
+
 	TUNName string // TUN 设备名 (默认自动分配)
 	TUNMTU  int    // TUN MTU，0 表示使用默认值（默认 1358，已预留约 142B 的 ESP-in-UDP 封装开销）
 

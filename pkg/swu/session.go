@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"math/rand"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -25,8 +24,8 @@ import (
 
 // SA 生命周期常量（秒）
 const (
-	ikeRekeyInterval   = 1500 // 6 分钟：主动 IKE SA Rekey
-	childRekeyInterval = 1800 // 7 分钟：主动 Child SA Rekey（在 ePDG ~8 分钟 ESP SA 过期前）
+	ikeRekeyInterval   = 1500 // 25 分钟：既有主动 IKE SA Rekey 基线
+	childRekeyInterval = 1800 // 30 分钟：既有主动 Child SA Rekey 基线
 	ikeRekeyJitter     = 30   // 最大 30 秒随机 jitter，避免多设备同时 IKE Rekey (对标 strongSwan margintime)
 	childRekeyJitter   = 30   // 最大 30 秒随机 jitter，避免多设备同时 Child SA Rekey
 )
@@ -149,10 +148,16 @@ type Session struct {
 	lastEncryptedMsgID uint32
 
 	// COOKIE 处理
-	cookie         []byte            // ePDG 返回的 COOKIE
-	sendCookie     bool              // 标记是否需要发送 COOKIE
-	initProposals  []*ikev2.Proposal // 初始 IKE_SA_INIT 报价（COOKIE 重发时保持不变）
-	proposalPolicy *sessionProposalPolicy
+	cookie          []byte            // ePDG 返回的 COOKIE
+	sendCookie      bool              // 标记是否需要发送 COOKIE
+	initProposals   []*ikev2.Proposal // 初始 IKE_SA_INIT 报价（COOKIE 重发时保持不变）
+	proposalPolicy  *sessionProposalPolicy
+	renewalOnce     sync.Once
+	renewalPolicy   *sessionRenewalPolicy
+	renewalError    error
+	ikeHardExpiry   saHardExpiry
+	childHardExpiry saHardExpiry
+	dpdStart        sync.Once
 
 	// RFC 5723: Session Resumption
 	resumeTicket []byte // ePDG 下发的 Ticket_Opaque
@@ -312,11 +317,15 @@ func (s *Session) connectOnce() (result error) {
 	if err := s.prepareProposalPolicy(); err != nil {
 		return err
 	}
+	if err := s.prepareRenewalPolicy(); err != nil {
+		return err
+	}
 
 	s.Logger.Debug("初始化滑动窗口队列任务调度器 TaskManager", logger.Int("windowSize", 5))
 
 	// 在 Socket 启动前暂不配置 sendFunc，等到下面 socket.Start() 之后重载
-	s.taskMgr = NewTaskManager(s.ctx, nil, 5, nil)
+	retry := s.renewalPolicy.Retransmission
+	s.taskMgr = NewTaskManager(s.ctx, &retry, 5, nil)
 	s.taskMgr.responseValidator = s.validateWindowResponse
 	s.taskMgr.responseCleanup = func(msg *OutgoingMessage) { s.fragmentBuf.discardResponse(msg.Exchange, msg.MsgID) }
 
@@ -521,6 +530,13 @@ func (s *Session) connectOnce() (result error) {
 		}
 	} // End of if !resumed block
 
+	// Both initial SAs are now authenticated. Dataplane setup and callbacks
+	// must not push their local hard deadlines into the future.
+	established := time.Now()
+	s.renewIKEHardExpiry(established)
+	s.renewChildHardExpiry(established)
+	s.startHardExpiry(&s.ikeHardExpiry, s.renewalPolicy.IKE.HardLifetime, SessionDownIKELifetime)
+	s.startHardExpiry(&s.childHardExpiry, s.renewalPolicy.Child.HardLifetime, SessionDownChildLifetime)
 	s.Logger.Info("会话已建立", logger.Duration("handshake", time.Since(handshakeStart)))
 
 	// 4. 设置 IPSec 数据平面
@@ -539,6 +555,9 @@ func (s *Session) connectOnce() (result error) {
 			}
 			s.startDataPlaneLoop()
 		}
+		if s.ctx.Err() != nil {
+			return context.Cause(s.ctx)
+		}
 		if s.cfg.OnReady != nil {
 			s.cfg.OnReady()
 		}
@@ -553,13 +572,15 @@ func (s *Session) connectOnce() (result error) {
 	// 启动 IKE SA 生命周期管理：定时触发 IKE SA Rekey
 	s.startIKESARekeyTimer(ikeInterval)
 
-	// 启动 Child SA 生命周期管理：定时触发 Child SA Rekey
-	// 参考 strongSwan rekey_child_sa_job：在 ePDG ESP SA 过期前刷新
+	// 启动独立 Child SA 密钥轮换。
 	s.startChildSARekeyTimer(childInterval)
 
 	// 启动 Reauth Timer (如果配置了)
-	if s.cfg.ReauthInterval > 0 {
-		s.startIKEReauthTimer(time.Duration(s.cfg.ReauthInterval) * time.Second)
+	if s.renewalPolicy.Reauthentication > 0 {
+		s.startIKEReauthTimer(s.renewalPolicy.Reauthentication)
+	}
+	if s.renewalPolicy.explicit {
+		s.StartDPD(s.renewalPolicy.DPDInterval)
 	}
 
 	// 启动 XFRM SA Expire 内核事件监听（仅做日志+Hard Expire 处理）
@@ -690,7 +711,13 @@ func (s *Session) startNetEventMonitor() {
 //  2. 超出 interval + dpdMargin 则升级为 DPD 请求
 //  3. 正常范围内发送 0xFF 单字节 keepalive
 func (s *Session) startNATKeepalive(interval time.Duration) {
-	const keepaliveDPDMargin = 150 * time.Second // strongSwan keep_alive_dpd_margin 默认值
+	if s.prepareRenewalPolicy() != nil {
+		return
+	}
+	keepaliveDPDMargin := s.renewalPolicy.NATKeepaliveDPDMargin
+	if s.renewalPolicy.explicit {
+		interval = s.renewalPolicy.NATKeepaliveInterval
+	}
 
 	if s.natKeepaliveStarted || interval <= 0 {
 		return
@@ -761,15 +788,20 @@ func (s *Session) startNATKeepalive(interval time.Duration) {
 }
 
 // startIKESARekeyTimer 启动 IKE SA 生命周期管理
-// 定期触发 IKE SA Rekey，在 ePDG 8 分钟超时前刷新整个 IKE SA
-// 已经应用类似 strongSwan 的防爆破 jitter 分布
+// 定期触发 IKE SA Rekey；本地软期限不是网侧协商寿命。
 func (s *Session) startIKESARekeyTimer(interval time.Duration) {
 	const rekeyMaxFail = 2
+	if s.prepareRenewalPolicy() != nil {
+		return
+	}
+	jitter := s.renewalPolicy.IKE.RekeyJitter
+	if s.renewalPolicy.explicit {
+		interval = s.renewalPolicy.IKE.SoftLifetime
+	}
+	s.startHardExpiry(&s.ikeHardExpiry, s.renewalPolicy.IKE.HardLifetime, SessionDownIKELifetime)
 
 	go func() {
-		// 引入随机的 jitter_time，提早 (0 ~ 30s) 行动以错开跟 ePDG 断链的强时间并发
-		jitter := time.Duration(rand.Int63n(int64(ikeRekeyJitter))) * time.Second
-		timer := time.NewTimer(interval - jitter)
+		timer := time.NewTimer(rekeyDelay(interval, jitter))
 		defer timer.Stop()
 
 		failCount := 0
@@ -787,10 +819,10 @@ func (s *Session) startIKESARekeyTimer(interval time.Duration) {
 					default:
 					}
 				}
-				jitter = time.Duration(rand.Int63n(int64(ikeRekeyJitter))) * time.Second
-				timer.Reset(interval - jitter)
+				delay := rekeyDelay(interval, jitter)
+				timer.Reset(delay)
 				s.Logger.Debug("IKE SA Rekey 成功，Timer 已重置并携带 Jitter",
-					logger.Duration("interval", interval-jitter))
+					logger.Duration("interval", delay))
 			case <-timer.C:
 				s.Logger.Info("IKE SA 生命周期即将到期，发起主动 IKE SA Rekey",
 					logger.Duration("interval", interval))
@@ -810,8 +842,7 @@ func (s *Session) startIKESARekeyTimer(interval time.Duration) {
 					timer.Reset(60 * time.Second)
 				} else {
 					failCount = 0
-					jitter = time.Duration(rand.Int63n(int64(ikeRekeyJitter))) * time.Second
-					timer.Reset(interval - jitter)
+					timer.Reset(rekeyDelay(interval, jitter))
 				}
 			}
 		}
@@ -819,16 +850,22 @@ func (s *Session) startIKESARekeyTimer(interval time.Duration) {
 }
 
 // startChildSARekeyTimer 启动 Child SA 生命周期管理
-// 定期触发 CHILD_SA Rekey，在 ePDG ~8 分钟 ESP SA 过期前刷新密钥
+// 定期触发 CHILD_SA Rekey，不用认证期限替代密钥轮换。
 // 连续失败 rekeyMaxFail 次后触发隧道重建
 // 参考 strongSwan rekey_child_sa_job + jitter 机制
 func (s *Session) startChildSARekeyTimer(interval time.Duration) {
 	const rekeyMaxFail = 2
+	if s.prepareRenewalPolicy() != nil {
+		return
+	}
+	jitter := s.renewalPolicy.Child.RekeyJitter
+	if s.renewalPolicy.explicit {
+		interval = s.renewalPolicy.Child.SoftLifetime
+	}
+	s.startHardExpiry(&s.childHardExpiry, s.renewalPolicy.Child.HardLifetime, SessionDownChildLifetime)
 
 	go func() {
-		// 首次启动添加 jitter，避免多设备同时 Rekey
-		jitter := time.Duration(rand.Int63n(int64(childRekeyJitter))) * time.Second
-		timer := time.NewTimer(interval - jitter)
+		timer := time.NewTimer(rekeyDelay(interval, jitter))
 		defer timer.Stop()
 
 		failCount := 0
@@ -846,10 +883,10 @@ func (s *Session) startChildSARekeyTimer(interval time.Duration) {
 					default:
 					}
 				}
-				jitter = time.Duration(rand.Int63n(int64(childRekeyJitter))) * time.Second
-				timer.Reset(interval - jitter)
+				delay := rekeyDelay(interval, jitter)
+				timer.Reset(delay)
 				s.Logger.Debug("Child SA Rekey Timer 已重置",
-					logger.Duration("interval", interval-jitter))
+					logger.Duration("interval", delay))
 			case <-timer.C:
 				s.Logger.Info("Child SA 生命周期到期，发起主动 Child SA Rekey",
 					logger.Duration("interval", interval))
@@ -868,8 +905,7 @@ func (s *Session) startChildSARekeyTimer(interval time.Duration) {
 					timer.Reset(60 * time.Second) // 失败后 1 分钟重试
 				} else {
 					failCount = 0
-					jitter = time.Duration(rand.Int63n(int64(childRekeyJitter))) * time.Second
-					timer.Reset(interval - jitter)
+					timer.Reset(rekeyDelay(interval, jitter))
 				}
 			}
 		}
@@ -1136,7 +1172,7 @@ func (s *Session) setupXFRMDataPlane() error {
 		EncapSrcPort:  localPort,
 		EncapDstPort:  remotePort,
 		Ifid:          int(xfrmIfID),
-		TimeLimitSoft: 0, // 不设 expire（由 IKE SA Rekey 管理生命周期）
+		TimeLimitSoft: 0, // nil policy retains timer-only key rotation.
 		TimeLimitHard: 0,
 		ReplayWindow:  s.cfg.ReplayWindow,
 		SADir:         netlink.XFRM_SA_DIR_OUT,
@@ -1163,6 +1199,9 @@ func (s *Session) setupXFRMDataPlane() error {
 	}
 
 	// 配置算法参数
+	if err := s.applyChildLifetimes(&outSACfg, &inSACfg); err != nil {
+		return err
+	}
 	if isAEAD {
 		aeadInfo, err := driver.IKEv2AlgToXFRMAead(s.childEncrID, s.childEncrKeyLenBits)
 		if err != nil {

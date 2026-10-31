@@ -16,6 +16,7 @@ type peerChildRetirement struct {
 	in, out *ipsec.SecurityAssociation
 	ops     childRekeyXFRMOps
 	expires time.Time
+	hardDue time.Time
 	deleted bool
 	keys    *ikev2.IKESAKeys
 	mid     uint32
@@ -26,6 +27,9 @@ type peerChildRetirement struct {
 // The dispatcher holds rekeyMu. All validation and key construction precede
 // kernel preparation; publication occurs only after the response send succeeds.
 func (s *Session) handlePeerChildRekey(mid uint32, payloads []ikev2.Payload, ops childRekeyXFRMOps) error {
+	if err := s.prepareRenewalPolicy(); err != nil {
+		return err
+	}
 	if s.ctx != nil && s.ctx.Err() != nil {
 		return s.ctx.Err()
 	}
@@ -86,7 +90,8 @@ func (s *Session) handlePeerChildRekey(mid uint32, payloads []ikev2.Payload, ops
 	}
 	s.cacheFragmentReply(ikev2.CREATE_CHILD_SA, mid, response)
 	s.childMu.Lock()
-	s.retiredChild = &peerChildRetirement{in: s.ChildSAIn, out: s.ChildSAOut, ops: ops, expires: time.Now().Add(3 * time.Minute), keys: s.Keys, mid: mid, hash: hash, reply: response}
+	hardDue := s.childHardExpiry.deadline()
+	s.retiredChild = &peerChildRetirement{in: s.ChildSAIn, out: s.ChildSAOut, ops: ops, expires: retirementDeadline(time.Now(), hardDue), hardDue: hardDue, keys: s.Keys, mid: mid, hash: hash, reply: response}
 	s.ChildSAIn, s.ChildSAOut = next.in, next.out
 	if s.ChildSAsIn == nil {
 		s.ChildSAsIn = make(map[uint32]*ipsec.SecurityAssociation)
@@ -96,6 +101,7 @@ func (s *Session) handlePeerChildRekey(mid uint32, payloads []ikev2.Payload, ops
 	s.childOutPolicies = []childOutPolicy{{saOut: next.out, tsr: s.tsr}}
 	s.lastChildRekeyTime = time.Now()
 	s.childMu.Unlock()
+	s.renewChildHardExpiry(s.lastChildRekeyTime)
 	s.Logger.Info("对端 CHILD_SA Rekey 成功", logger.Uint32("oldOutSPI", s.retiredChild.out.SPI), logger.Uint32("newOutSPI", next.out.SPI), logger.Uint32("newInSPI", next.in.SPI))
 	select {
 	case s.childRekeyResetCh <- struct{}{}:

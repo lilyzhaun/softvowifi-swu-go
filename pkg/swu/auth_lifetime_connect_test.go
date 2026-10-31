@@ -15,11 +15,13 @@ import (
 
 func TestConnectAuthenticatedLifetimeAndCPOrderKeepIndependentAUTH(t *testing.T) {
 	for _, scenario := range []struct {
-		name      string
-		reordered bool
-		lifetime  uint32
+		name        string
+		reordered   bool
+		lifetime    uint32
+		localReauth int
 	}{
-		{"standard", false, 3600}, {"ike_scope_cp_last", true, 3600}, {"short_authentication_deadline", false, 4},
+		{"standard", false, 3600, 0}, {"ike_scope_cp_last", true, 3600, 0}, {"short_authentication_deadline", false, 4, 0},
+		{"explicit_earlier_local_reauthentication", false, 3600, 1}, {"protected_deadline_still_earlier", false, 4, 10},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			peer := newAKAWirePeer(t)
@@ -34,6 +36,12 @@ func TestConnectAuthenticatedLifetimeAndCPOrderKeepIndependentAUTH(t *testing.T)
 				return nil
 			}))
 			s := NewSession(&Config{LocalAddr: "127.0.0.1", EpDGAddr: "127.0.0.1", EpDGPort: uint16(peer.conn.LocalAddr().(*net.UDPAddr).Port), APN: "ims", SIM: provider}, log)
+			if scenario.localReauth > 0 {
+				value := renewalInput()
+				value["Reauthentication"] = time.Duration(scenario.localReauth) * time.Second
+				value["DPDInterval"] = 0
+				setRenewalInput(t, s.cfg, value)
+			}
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			done := make(chan error, 1)
 			go func() { done <- s.Connect(ctx) }()
@@ -83,7 +91,7 @@ func TestConnectAuthenticatedLifetimeAndCPOrderKeepIndependentAUTH(t *testing.T)
 				t.Fatal("normal Connect did not establish before deadline")
 			}
 			want := error(context.Canceled)
-			if scenario.lifetime == 4 {
+			if scenario.lifetime == 4 || scenario.localReauth > 0 {
 				want = ErrReauth
 			} else {
 				cancel()
