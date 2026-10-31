@@ -21,6 +21,9 @@ const cookie2Size = 16
 //  2. 验证响应中的 COOKIE2
 //  3. 确认成功后才更新 Socket 和 XFRM
 func (s *Session) UpdateAddresses(newLocalAddr, newRemoteAddr string) error {
+	if s.remoteAddressFamily != "" {
+		return ErrAddressFamilyPolicyTransport
+	}
 	if !s.mobikeSupported {
 		return errors.New("对端不支持 MOBIKE，无法动态更新地址")
 	}

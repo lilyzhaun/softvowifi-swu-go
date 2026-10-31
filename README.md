@@ -31,6 +31,8 @@ Linux network drivers and session lifecycle logic. Reviewed maintenance includes
 - Optional captured [renewal policy](docs/renewal-policy.md) connects independent
   SA lifetimes, reauthentication, DPD, NAT keepalive and request retransmission
   to their runtime consumers; an omitted policy preserves the legacy baseline.
+- Captured [remote address-family selection](docs/remote-address-family.md)
+  constrains actual ePDG candidates while keeping DNS endpoint selection independent.
 - Child-SA rekey/delete uses the local inbound SPI; policy/rule cleanup is scoped
   to the owning session rather than another session's table.
 

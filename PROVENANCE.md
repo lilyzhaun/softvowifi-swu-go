@@ -5,6 +5,12 @@
 > 后继维护说明与安全/覆盖边界见[README](README.md)及docs中的协议专题。
 > 原始上游commit/version仍unknown；本轮不改源码、依赖或原许可来填补它们。
 
+## 2026-11-01：显式远端地址族选择
+
+负责人`lilyzhaun`，基准`9031f8af891de254447b15365b220b1c62828b00`，分支`feat/remote-address-family-20261101`。仅在既有解析/socket路径增加调用者显式IPv4/IPv6偏好或单栈限制，NewSession捕获策略，DNS端点仍独立按所选网络选源；空策略保原兼容行为，非法值/字面地址冲突在拨号前拒绝。自定义TransportFactory与未接该契约的MOBIKE路径对显式策略拒绝，不静默忽略策略或宣称迁移已支持。详细API、直接loopback与未验边界见[地址族策略](docs/remote-address-family.md)。
+
+来源为本仓既有解析/传输实现与[Go net API](https://pkg.go.dev/net)，未复制外部客户端实现、运营商配置或默认参数；原MIT版权、module、依赖pin与unknown上游归属保持。真实验证结果以本次PR CI回执为准，源码接线及本地合成peer不代表运营商、SIM或Android实机通过。
+
 ## 已知与未知
 
 - 原 README 指向 <https://github.com/iniwex5/swu-go>，当前 `go.mod` 却声明 `github.com/1239t/swu-go`。两者不一致，不能据此推断实际下载来源。
