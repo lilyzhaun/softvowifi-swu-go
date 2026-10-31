@@ -20,6 +20,9 @@ func (s *Session) RekeyChildSA() error {
 }
 
 func (s *Session) rekeyChildSA(ops childRekeyXFRMOps) error {
+	if err := s.prepareRenewalPolicy(); err != nil {
+		return err
+	}
 	s.rekeyMu.Lock()
 	defer s.rekeyMu.Unlock()
 	if s.ChildSAOut == nil || s.ChildSAIn == nil {
@@ -95,6 +98,7 @@ func (s *Session) commitChildSARekey(next childSARekey, ops childRekeyXFRMOps) e
 	}
 	s.lastChildRekeyTime = time.Now()
 	s.childMu.Unlock()
+	s.renewChildHardExpiry(s.lastChildRekeyTime)
 	if s.ws != nil {
 		s.ws.LogChildSA(next.in.SPI, next.out.SPI, s.cfg.LocalAddr, s.cfg.EpDGAddr, next.in.EncryptionKey, next.out.EncryptionKey, next.encrID)
 	}

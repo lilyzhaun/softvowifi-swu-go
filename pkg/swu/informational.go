@@ -27,6 +27,9 @@ func (s *Session) DPDProbe() error {
 
 // sendDeleteIKE 发送 IKE SA 删除通知
 func (s *Session) sendDeleteIKE() error {
+	if due := s.ikeHardExpiry.deadline(); !due.IsZero() && !time.Now().Before(due) {
+		return &SessionClosedError{Reason: SessionDownIKELifetime}
+	}
 	s.Logger.Debug("发送 IKE SA Delete 通知")
 	del := &ikev2.EncryptedPayloadDelete{
 		ProtocolID: ikev2.ProtoIKE,
@@ -72,6 +75,19 @@ func (s *Session) sendDeleteChildSA(spis []uint32) error {
 //  2. DPD 发送由 sendEncryptedWithRetry 负责超时重传（5次/~165s）
 //  3. 重传耗尽 → 判定对端不可达，触发隧道重建
 func (s *Session) StartDPD(interval time.Duration) {
+	if s.prepareRenewalPolicy() != nil {
+		return
+	}
+	if s.renewalPolicy.explicit {
+		interval = s.renewalPolicy.DPDInterval
+	}
+	if interval <= 0 {
+		return
+	}
+	s.dpdStart.Do(func() { s.startDPD(interval) })
+}
+
+func (s *Session) startDPD(interval time.Duration) {
 	s.initializeInboundActivity(time.Now())
 	ctx := s.ctx
 

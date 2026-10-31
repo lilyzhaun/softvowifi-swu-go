@@ -50,7 +50,7 @@ func (s *Session) ikeRequestsPending() bool {
 // Caller owns the crypto write lock. No mutexes or mutable buffers are copied.
 func (s *Session) retainIKEForPeerDelete(mid uint32, request []ikev2.Payload, reply []byte) {
 	codec := &Session{SPIi: s.SPIi, SPIr: s.SPIr, Keys: s.Keys, EncAlg: s.EncAlg, IntegAlg: s.IntegAlg, localResponder: s.localResponder, ikeIsAEAD: s.ikeIsAEAD, ikeEncrID: s.ikeEncrID, Logger: s.Logger, fragmentBuf: newFragmentBuffer()}
-	s.retiredIKE = &retiredIKESA{codec: codec, expires: time.Now().Add(3 * time.Minute), rekeyMID: mid, requestHash: ikePayloadHash(request), reply: append([]byte(nil), reply...)}
+	s.retiredIKE = &retiredIKESA{codec: codec, expires: retirementDeadline(time.Now(), s.ikeHardExpiry.deadline()), rekeyMID: mid, requestHash: ikePayloadHash(request), reply: append([]byte(nil), reply...)}
 }
 
 func (s *Session) expireRetiredIKE(now time.Time) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"net"
+	"time"
 
 	"github.com/1239t/swu-go/pkg/ikev2"
 	"github.com/1239t/swu-go/pkg/ipsec"
@@ -42,6 +43,9 @@ func (s *Session) childPair() (*ipsec.SecurityAssociation, *ipsec.SecurityAssoci
 func (s *Session) incomingChild(spi uint32) *ipsec.SecurityAssociation {
 	s.childMu.RLock()
 	defer s.childMu.RUnlock()
+	if old := s.retiredChild; old != nil && old.in.SPI == spi && !old.hardDue.IsZero() && !time.Now().Before(old.hardDue) {
+		return nil // The cleanup ticker must not extend a retired key's lifetime.
+	}
 	if hit := s.ChildSAsIn[spi]; hit != nil {
 		return hit
 	}

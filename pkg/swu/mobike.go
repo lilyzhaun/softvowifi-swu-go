@@ -203,12 +203,17 @@ func (s *Session) updateXFRMState(localAddr, remoteAddr string) error {
 	// ── 更新 SA (出站) ──
 	if s.ChildSAOut != nil {
 		saCfg := driver.XFRMSAConfig{
-			Src: lIP, Dst: rIP,
+			OutputMark: s.xfrmOutputMark,
+			Src:        lIP, Dst: rIP,
 			SPI: s.ChildSAOut.SPI, Proto: netlink.XFRM_PROTO_ESP,
 			Mode: netlink.XFRM_MODE_TUNNEL, IsAEAD: isAEAD,
 			EncapType:    netlink.XFRM_ENCAP_ESPINUDP,
 			EncapSrcPort: lPort, EncapDstPort: rPort,
 			Ifid: s.xfrmIfID, ReplayWindow: s.cfg.ReplayWindow,
+			SADir: netlink.XFRM_SA_DIR_OUT, ESN: s.childESN,
+		}
+		if err := s.applyChildLifetimes(&saCfg); err != nil {
+			return err
 		}
 		if err := s.fillSAKeys(&saCfg, s.ChildSAOut, isAEAD); err != nil {
 			return fmt.Errorf("填充 SAOut 密钥失败: %v", err)
@@ -227,6 +232,10 @@ func (s *Session) updateXFRMState(localAddr, remoteAddr string) error {
 			EncapType:    netlink.XFRM_ENCAP_ESPINUDP,
 			EncapSrcPort: rPort, EncapDstPort: lPort,
 			Ifid: s.xfrmIfID, ReplayWindow: s.cfg.ReplayWindow,
+			SADir: netlink.XFRM_SA_DIR_IN, ESN: s.childESN,
+		}
+		if err := s.applyChildLifetimes(&saCfg); err != nil {
+			return err
 		}
 		if err := s.fillSAKeys(&saCfg, s.ChildSAIn, isAEAD); err != nil {
 			return fmt.Errorf("填充 SAIn 密钥失败: %v", err)

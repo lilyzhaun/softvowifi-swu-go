@@ -29,6 +29,9 @@ func (s *Session) ikeRekeyProposal(spi []byte) *ikev2.Proposal {
 // RekeyIKESA 执行 IKE SA 密钥轮换 (CREATE_CHILD_SA 交换, ProtocolID=IKE)
 // RFC 7296 §2.8: 通过新 DH 交换刷新 IKE SA 的 SPIs、密钥和 MsgID
 func (s *Session) RekeyIKESA() error {
+	if err := s.prepareRenewalPolicy(); err != nil {
+		return err
+	}
 	s.rekeyMu.Lock()
 	defer s.rekeyMu.Unlock()
 
@@ -163,6 +166,9 @@ func (s *Session) handleRekeyIKESARespParsed(payloads []ikev2.Payload, niNonce [
 	}
 
 	// 原子切换 IKE SA 状态（DELETE 发送后再切换）
+	if s.ctx != nil && s.ctx.Err() != nil {
+		return s.ctx.Err()
+	}
 	s.ikeAdmissionMu.Lock()
 	s.ikeCryptoMu.Lock()
 	s.SPIi = newSPIi
@@ -183,6 +189,7 @@ func (s *Session) handleRekeyIKESARespParsed(payloads []ikev2.Payload, niNonce [
 
 	// 更新冷却期时间戳
 	s.lastRekeyTime = time.Now()
+	s.renewIKEHardExpiry(s.lastRekeyTime)
 
 	// 通知 Timer 重置
 	select {
@@ -201,6 +208,9 @@ func (s *Session) HandleRekeyIKESARequest(msgID uint32, payloads []ikev2.Payload
 }
 
 func (s *Session) handleRekeyIKESARequestLocked(msgID uint32, payloads []ikev2.Payload) error {
+	if err := s.prepareRenewalPolicy(); err != nil {
+		return err
+	}
 	s.ikeAdmissionMu.Lock()
 	defer s.ikeAdmissionMu.Unlock()
 	if s.ikeRequestsPending() {
@@ -291,6 +301,7 @@ func (s *Session) handleRekeyIKESARequestLocked(msgID uint32, payloads []ikev2.P
 	s.DH = newDH
 	s.lastRekeyTime = time.Now()
 	s.ikeCryptoMu.Unlock()
+	s.renewIKEHardExpiry(s.lastRekeyTime)
 
 	s.Logger.Info("被动 IKE SA Rekey 完成，密钥已更新",
 		logger.Uint64("newSPIi", peerSPI),

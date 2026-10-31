@@ -28,6 +28,9 @@ Linux network drivers and session lifecycle logic. Reviewed maintenance includes
 - Initial ESP offers include a complete AES-CBC256/HMAC-SHA2-512 combination.
 - Explicit ordered IKE/ESP policies select a closed set of complete suites;
   see [proposal policy](docs/proposal-policy.md) for capture and layout rules.
+- Optional captured [renewal policy](docs/renewal-policy.md) connects independent
+  SA lifetimes, reauthentication, DPD, NAT keepalive and request retransmission
+  to their runtime consumers; an omitted policy preserves the legacy baseline.
 - Child-SA rekey/delete uses the local inbound SPI; policy/rule cleanup is scoped
   to the owning session rather than another session's table.
 

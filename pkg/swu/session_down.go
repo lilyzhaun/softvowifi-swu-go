@@ -30,6 +30,8 @@ const (
 	SessionDownPeerChildDelete         SessionDownReason = "peer_child_delete"
 	SessionDownReauthentication        SessionDownReason = "reauthentication"
 	SessionDownKernelHardExpire        SessionDownReason = "kernel_hard_expire"
+	SessionDownIKELifetime             SessionDownReason = "ike_lifetime_expired"
+	SessionDownChildLifetime           SessionDownReason = "child_lifetime_expired"
 	SessionDownRedirect                SessionDownReason = "redirect"
 	SessionDownLocalCancel             SessionDownReason = "local_cancel"
 	SessionDownInternalTransport       SessionDownReason = "internal_transport"
@@ -50,6 +52,8 @@ func ParseSessionDownReason(raw string) SessionDownReason {
 		SessionDownPeerChildDelete,
 		SessionDownReauthentication,
 		SessionDownKernelHardExpire,
+		SessionDownIKELifetime,
+		SessionDownChildLifetime,
 		SessionDownRedirect,
 		SessionDownLocalCancel,
 		SessionDownInternalTransport,
