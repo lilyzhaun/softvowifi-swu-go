@@ -11,6 +11,11 @@ or duplicate identifier, conflicting DH group, or incompatible layout returns
 is attempted. Existing callers that supplied non-empty, previously ignored
 strings must migrate to this documented closed set.
 
+Call `cfg.ValidateProposalPolicy()` before storing an editor's candidate policy.
+It invokes the same compiler without creating a Session, touching a SIM/socket,
+or mutating the configuration. Successful validation is not negotiation evidence;
+`Connect` still captures and validates the actual policy it will use.
+
 ## IKE suites
 
 Append exactly `-dh14` or `-dh2` to one of these identifiers:
@@ -82,3 +87,8 @@ affected SWu-package run passed 324 parents and 735 children, with two existing
 kernel opt-in skips; whole-library vet ran successfully. Other packages retain
 their preceding successful run. This is explicitly split host coverage; the
 PR's CI separately runs its normal complete suite on the submitted revision.
+
+The additive public validation API was checked in a subsequent complete host
+run: 428 parents and 849 children passed, with 14 parent/12 child kernel opt-in
+skips; whole-library vet succeeded. Its one-parent/six-child regression checks
+valid and invalid policies, unchanged input and absence of socket work.

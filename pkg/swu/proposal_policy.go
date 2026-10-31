@@ -10,6 +10,16 @@ import (
 // It never requests a retry with a wider or default policy.
 var ErrInvalidProposalPolicy = errors.New("invalid proposal policy")
 
+// ValidateProposalPolicy checks the same complete policy accepted by Connect.
+// It does not create a Session, access a SIM or socket, or mutate Config.
+func (c *Config) ValidateProposalPolicy() error {
+	if _, _, err := compileIKEPolicy(c); err != nil {
+		return err
+	}
+	_, _, err := compileESPPolicy(c)
+	return err
+}
+
 // These names identify this library's existing complete suites, not a parser
 // for another implementation's configuration language or carrier defaults.
 var ikePolicySuites = map[string]struct{ number, dh uint8 }{
