@@ -12,6 +12,7 @@ IMS/SIP注册、短信投递、语音媒体、Android SIM接线和账户开通�
 - COOKIE重试首载荷顺序，最终IKE_AUTH拒绝透传。
 - 只在已有网关请求路径发送设备身份，不在首AUTH主动附加。
 - 初始ESP完整CBC256/SHA2-512报价。
+- 显式有序IKE/ESP策略选择已支持的完整套件闭集；捕获、布局与重键边界见[报价策略](docs/proposal-policy.md)。
 - Child SA换钥/删除的本端入向SPI语义，以及按会话归属回收规则/策略。
 
 详见[来源与维护记录](PROVENANCE.md)、[错误透传](docs/ike-auth-final-reject.md)、

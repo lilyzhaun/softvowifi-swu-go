@@ -83,8 +83,10 @@ type Config struct {
 	// OnReady is invoked once the Child SA dataplane is ready for inner traffic.
 	OnReady func()
 
-	// 支持自定义的 IKEv2 和 ESP 协商组合列表。如果留空，将使用内置的大而全强兼容默认套件。
-	// 示例：[]string{"aes256gcm16-prfsha384-ecp384", "aes128-sha256-modp2048"}
+	// Ordered complete suite IDs documented in docs/proposal-policy.md.
+	// Nil preserves the existing offers; a non-nil empty/unknown/conflicting
+	// policy returns ErrInvalidProposalPolicy before Connect opens a socket.
+	// Captured together at first protocol use; later edits need a new Session.
 	IKEProposals []string
 	ESPProposals []string
 

@@ -18,6 +18,9 @@ import (
 )
 
 func (s *Session) buildIKEAuthInitPayloads() ([]ikev2.Payload, error) {
+	if err := s.prepareProposalPolicy(); err != nil {
+		return nil, err
+	}
 	// 载荷: IDi, SA, TS, TS, N(EAP_ONLY)
 
 	// 1. IDi
@@ -73,19 +76,7 @@ func (s *Session) buildIKEAuthInitPayloads() ([]ikev2.Payload, error) {
 		binary.BigEndian.PutUint32(spiBytes, s.childSPI)
 	}
 
-	// 利用工厂方法生成覆盖高、中、低兼容性以及 ESN 处理的 Proposal 支持列表
-	proposals := ikev2.CreateMultiProposalESP(spiBytes)
-	if number := s.cfg.InitialChildProposalNumber; number != 0 {
-		if int(number) > len(proposals) {
-			return nil, errors.New("initial Child proposal is not a complete original offer")
-		}
-		chosen := *proposals[number-1]
-		chosen.ProposalNum = 1
-		proposals = []*ikev2.Proposal{&chosen}
-	}
-
-	// 如果用户级配置指定了只发开启 ESN，则后续可在此二次过滤
-	// 但默认状态我们发送大而全的列表
+	proposals := policyProposalsWithSPI(s.proposalPolicy.initialChild, spiBytes)
 	saPayload := &ikev2.EncryptedPayloadSA{
 		Proposals: proposals,
 	}

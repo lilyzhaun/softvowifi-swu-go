@@ -26,6 +26,8 @@ Linux network drivers and session lifecycle logic. Reviewed maintenance includes
 - Configured equipment identity is sent on an existing gateway request path,
   not unconditionally in the first IKE_AUTH.
 - Initial ESP offers include a complete AES-CBC256/HMAC-SHA2-512 combination.
+- Explicit ordered IKE/ESP policies select a closed set of complete suites;
+  see [proposal policy](docs/proposal-policy.md) for capture and layout rules.
 - Child-SA rekey/delete uses the local inbound SPI; policy/rule cleanup is scoped
   to the owning session rather than another session's table.
 

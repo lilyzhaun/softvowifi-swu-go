@@ -9,7 +9,10 @@ import (
 )
 
 func (s *Session) localChildProposals(spi []byte) ([]*ikev2.Proposal, error) {
-	all := ikev2.CreateMultiProposalESP(spi)
+	if err := s.prepareProposalPolicy(); err != nil {
+		return nil, err
+	}
+	all := policyProposalsWithSPI(s.proposalPolicy.child, spi)
 	current := s.currentChildProposal(spi)
 	found := -1
 	for i, p := range all {
