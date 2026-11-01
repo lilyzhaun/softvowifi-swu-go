@@ -5,6 +5,12 @@
 > 后继维护说明与安全/覆盖边界见[README](README.md)及docs中的协议专题。
 > 原始上游commit/version仍unknown；本轮不改源码、依赖或原许可来填补它们。
 
+## 2026-11-01：收到的IDr字节与AUTH输入
+
+负责人`lilyzhaun`，基准`3eaf07b810724d9e4e8d4e799096bb0242cde831`，分支`fix/idr-auth-wire-body-20261101`。依据[RFC7296 §2.15](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.15)及[§3.5](https://www.rfc-editor.org/rfc/rfc7296.html#section-3.5)：ID载荷保留字节没有身份语义，但收到的完整ID body仍参与AUTH。独立线格式/标准库MAC及正常UDP与SKF Connect先取得6个行为失败、1个零保留字节对照通过；最小修正为解码时保存独立body，由认证读取独立副本，发送Encode仍清零RESERVED。既有身份一致性、AUTH及事务提交检查保持，完整结果以实际CI为准，详见[身份认证字节](docs/identity-auth-body.md)。不预报设备、运营商互通或完整身份策略。
+
+来源仅上述RFC（2014-10，IETF Trust Legal Provisions）、本仓既有解析/认证路径及Go标准库，未复制外部客户端代码或配置。原MIT版权、module、依赖pin及unknown上游归属保持。
+
 ## 2026-11-01：显式远端地址族选择
 
 负责人`lilyzhaun`，基准`9031f8af891de254447b15365b220b1c62828b00`，分支`feat/remote-address-family-20261101`。仅在既有解析/socket路径增加调用者显式IPv4/IPv6偏好或单栈限制，NewSession捕获策略，DNS端点仍独立按所选网络选源；空策略保原兼容行为，非法值/字面地址冲突在拨号前拒绝。自定义TransportFactory与未接该契约的MOBIKE路径对显式策略拒绝，不静默忽略策略或宣称迁移已支持。详细API、直接loopback与未验边界见[地址族策略](docs/remote-address-family.md)。

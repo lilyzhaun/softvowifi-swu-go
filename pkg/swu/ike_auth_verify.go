@@ -48,7 +48,7 @@ func extractIDrBody(payloads []ikev2.Payload) ([]byte, error) {
 		if !ok || id.IsInitiator {
 			continue
 		}
-		encoded, err := id.Encode()
+		encoded, err := id.AuthenticationBody()
 		if err != nil {
 			return nil, fmt.Errorf("encode IDr: %w", err)
 		}

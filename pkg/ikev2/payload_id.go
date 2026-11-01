@@ -1,14 +1,16 @@
 package ikev2
 
 import (
+	"bytes"
 	"errors"
 )
 
 // 身份标识载荷 (RFC 7296 3.5 节)
 type EncryptedPayloadID struct {
-	IDType      uint8
-	IDData      []byte
-	IsInitiator bool // 辅助字段，用于确定 Type() 返回值
+	IDType       uint8
+	IDData       []byte
+	IsInitiator  bool // 辅助字段，用于确定 Type() 返回值
+	receivedBody []byte
 }
 
 const (
@@ -37,13 +39,25 @@ func (p *EncryptedPayloadID) Encode() ([]byte, error) {
 	return buf, nil
 }
 
+// AuthenticationBody returns an owned copy of the received ID payload body,
+// including RESERVED bytes, for RFC 7296 section 2.15 authentication. Mutating
+// the decoded fields does not rewrite that transcript. Locally constructed IDs
+// use their outgoing encoding; Encode always sends zero RESERVED bytes.
+func (p *EncryptedPayloadID) AuthenticationBody() ([]byte, error) {
+	if p.receivedBody != nil {
+		return bytes.Clone(p.receivedBody), nil
+	}
+	return p.Encode()
+}
+
 func DecodePayloadID(data []byte, isInitiator bool) (*EncryptedPayloadID, error) {
 	if len(data) < 4 {
 		return nil, errors.New("ID 载荷太短")
 	}
 	return &EncryptedPayloadID{
-		IDType:      data[0],
-		IDData:      data[4:], // 复制还是切片？只读切片是可以的
-		IsInitiator: isInitiator,
+		IDType:       data[0],
+		IDData:       bytes.Clone(data[4:]),
+		IsInitiator:  isInitiator,
+		receivedBody: bytes.Clone(data),
 	}, nil
 }
