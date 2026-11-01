@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"reflect"
 	"testing"
 	"time"
 
@@ -35,6 +36,33 @@ func TestIdentityPolicyConnectUsesRequestedTypesAndOriginalAUTH(t *testing.T) {
 
 func TestIdentityPolicyConnectAcceptsIndependentPeerConstraint(t *testing.T) {
 	testAKAIdentityAUTH(t, "identity-pinned")
+}
+
+func TestIdentityPolicyConnectWithoutPeerConstraint(t *testing.T) {
+	testAKAIdentityAUTH(t, "identity-unconstrained")
+}
+
+func assertIdentityPolicySnapshot(t *testing.T, session *Session, local, requested uint8, constrained bool) {
+	t.Helper()
+	raw, err := json.Marshal(session.Snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value map[string]any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		t.Fatal(err)
+	}
+	if local == 0 {
+		if value["Identity"] != nil {
+			t.Fatal("unauthenticated or retired session published identity facts")
+		}
+		return
+	}
+	want := map[string]any{"LocalIDType": float64(local), "RequestedIDrType": float64(requested),
+		"PeerIDType": float64(ikev2.ID_FQDN), "PeerConstrained": constrained}
+	if !reflect.DeepEqual(value["Identity"], want) {
+		t.Fatal("normal Connect did not publish exact authenticated identity types without identity data")
+	}
 }
 
 func TestIdentityPolicyConnectRejectsUnmatchedPeerBeforeEAP(t *testing.T) {
@@ -68,4 +96,5 @@ func TestIdentityPolicyConnectRejectsUnmatchedPeerBeforeEAP(t *testing.T) {
 	if !errors.Is(connectErr, ErrIKEAuthFailed) || provider.calls != 0 || session.ChildSAIn != nil || session.ChildSAOut != nil {
 		t.Fatalf("peer policy did not stop the real EAP consumer: %v", connectErr)
 	}
+	assertIdentityPolicySnapshot(t, session, 0, 0, false)
 }

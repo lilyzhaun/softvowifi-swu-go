@@ -11,6 +11,8 @@
 
 仅参考RFC7296 §§2.15/2.16/3.5及本仓实际身份/EAP/重认证生命周期，使用本项目公开API，不复制外部客户端格式、字段、默认值或运营商参数。现主调用方没有临时身份跨Session持久回调，不能以库已有FastReauthContext宣称产品已具备该生命周期；本片不新增凭据存储、日志或设备请求。MIT/module/依赖及unknown上游归属保持。
 
+同片补充已认证类型事实：正常Connect先2行为RED后，SessionSnapshot.Identity复用现有认证owner/childMu发布和退役，仅含实际本地/对端类型、请求类型和约束状态，不含身份字节。nil策略保持nil；最终AUTH/数据面失败、取消与退役不发布，返回独立值副本。新旧聚焦59父/46子通过、0失败/skip/race，pkg/swu vet通过；该新输入须以PR最终CI为准，不套旧head的成功回执。
+
 ## 2026-11-01：收到的IDr字节与AUTH输入
 
 负责人`lilyzhaun`，基准`3eaf07b810724d9e4e8d4e799096bb0242cde831`，分支`fix/idr-auth-wire-body-20261101`。依据[RFC7296 §2.15](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.15)及[§3.5](https://www.rfc-editor.org/rfc/rfc7296.html#section-3.5)：ID载荷保留字节没有身份语义，但收到的完整ID body仍参与AUTH。独立线格式/标准库MAC及正常UDP与SKF Connect先取得6个行为失败、1个零保留字节对照通过；最小修正为解码时保存独立body，由认证读取独立副本，发送Encode仍清零RESERVED。既有身份一致性、AUTH及事务提交检查保持，完整结果以实际CI为准，详见[身份认证字节](docs/identity-auth-body.md)。不预报设备、运营商互通或完整身份策略。

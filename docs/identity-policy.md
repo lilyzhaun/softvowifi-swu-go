@@ -48,6 +48,15 @@ the policy copy does not freeze the entire Config. Temporary-identity credential
 storage/rotation remains the caller's existing responsibility. This change does
 not add a persistence service or claim complete fast-reauth interoperability.
 
+`SessionSnapshot.Identity` is available only for an explicit policy after final
+AUTH and any enabled dataplane setup. It contains `LocalIDType`,
+`RequestedIDrType`, `PeerIDType` and `PeerConstrained`, with no identity values.
+The local and peer types come from the actual authenticated transcript; the
+requested type is the captured type used in AUTH1. This is not certificate trust
+or proof of application traffic. A nil policy, failed AUTH, failed dataplane
+setup, cancellation or retirement leaves the projection nil. Returned facts are
+independent copies and cannot mutate the Session.
+
 ## Verification and sources
 
 Normal UDP Connect regressions first demonstrated that the old code ignored
@@ -58,6 +67,13 @@ initiator/responder AUTH, inner permanent Identity following an outer temporary
 identity, captured-policy aliasing, invalid input before transport, and final
 peer matching with nonzero RESERVED bytes. Full-library results belong to the
 fixing PR's actual CI; these peers are not SIM/carrier/device acceptance.
+
+The authenticated-facts extension first failed two normal Connect assertions on
+the pre-projection implementation. The extended focused run passed 59 parent
+tests and 46 subtests, with no failure/skip and race/shuffle enabled; `go vet`
+for `pkg/swu` also passed. It directly covers constrained and unconstrained
+success, nil-policy compatibility, final-AUTH/dataplane failures, cancellation
+before Connect returns, retirement and snapshot alias isolation.
 
 References are RFC 7296 §§2.15, 2.16 and 3.5 (October 2014; IETF Trust Legal
 Provisions), existing maintained code and Go standard-library APIs. No external

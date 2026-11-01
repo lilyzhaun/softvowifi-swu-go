@@ -30,11 +30,22 @@ type NegotiatedChildSecurity struct {
 	PFS uint16
 }
 
+// AuthenticatedIdentity contains only the wire types from the current
+// authenticated attempt and whether an explicit peer constraint was applied.
+// Identity values and credential material are never part of this projection.
+type AuthenticatedIdentity struct {
+	LocalIDType      uint8
+	RequestedIDrType uint8
+	PeerIDType       uint8
+	PeerConstrained  bool
+}
+
 // childMu protects publication and retirement. IKE rekey requires the same
 // complete tuple; Child rekey can select another tuple under that same lock.
 type sessionSecurity struct {
-	owner context.Context
-	ike   NegotiatedIKESecurity
+	owner    context.Context
+	ike      NegotiatedIKESecurity
+	identity *AuthenticatedIdentity
 }
 
 // Called only by Connect after final AUTH and any enabled dataplane setup.
@@ -45,6 +56,12 @@ func (s *Session) publishNegotiatedSecurity() {
 		Encryption: s.ikeEncrID, KeyBits: s.ikeEncrKeyLenBits,
 		Integrity: s.ikeIntegID, PRF: s.ikePRFID, DH: s.ikeDHID,
 	}}
+	if s.identityPolicy.explicit {
+		s.security.identity = &AuthenticatedIdentity{
+			LocalIDType: s.localIDiBody[0], RequestedIDrType: s.identityPolicy.requestedType,
+			PeerIDType: s.peerIDrBody[0], PeerConstrained: s.identityPolicy.peer != nil,
+		}
+	}
 }
 
 type SessionSnapshot struct {
@@ -64,6 +81,9 @@ type SessionSnapshot struct {
 	// Security is nil until authentication and dataplane readiness, and as
 	// soon as the authenticated owner is canceled or retired.
 	Security *NegotiatedSecurity
+	// Identity follows the same authenticated-owner lifetime as Security.
+	// A nil identity policy leaves this projection nil for legacy callers.
+	Identity *AuthenticatedIdentity
 }
 
 func (s *Session) Snapshot() SessionSnapshot {
@@ -104,6 +124,10 @@ func (s *Session) Snapshot() SessionSnapshot {
 				Encryption: s.childEncrID, KeyBits: s.childEncrKeyLenBits,
 				Integrity: s.childIntegID, ESN: s.childESN,
 			},
+		}
+		if s.security.identity != nil {
+			identity := *s.security.identity
+			out.Identity = &identity
 		}
 	}
 	if s.cpConfig != nil {

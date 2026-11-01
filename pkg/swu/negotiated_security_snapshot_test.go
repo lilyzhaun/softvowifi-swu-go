@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,8 +40,9 @@ func assertNoNegotiatedSecurity(t *testing.T, s *Session) {
 }
 
 func TestNegotiatedSecuritySnapshotUsesActualAuthenticatedSelection(t *testing.T) {
-	for _, name := range []string{"authenticated", "invalid_final_auth", "dataplane_failure"} {
-		t.Run(name, func(t *testing.T) {
+	for _, scenario := range []string{"authenticated", "invalid_final_auth", "dataplane_failure", "identity_invalid_final_auth", "identity_dataplane_failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			name := strings.TrimPrefix(scenario, "identity_")
 			accepted := name != "invalid_final_auth"
 			peer := newAKAWirePeer(t)
 			provider := &akaWireSIM{vectorSIM: vectorSIM{res: []byte{0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67}, ck: bytes.Repeat([]byte{0x43}, 16), ik: bytes.Repeat([]byte{0x49}, 16)}}
@@ -53,13 +55,19 @@ func TestNegotiatedSecuritySnapshotUsesActualAuthenticatedSelection(t *testing.T
 				}
 				return nil
 			}))
-			s := NewSession(&Config{LocalAddr: "127.0.0.1", EpDGAddr: "127.0.0.1", EpDGPort: uint16(peer.conn.LocalAddr().(*net.UDPAddr).Port), APN: "ims", SIM: provider}, log)
+			cfg := &Config{LocalAddr: "127.0.0.1", EpDGAddr: "127.0.0.1", EpDGPort: uint16(peer.conn.LocalAddr().(*net.UDPAddr).Port), APN: "ims", SIM: provider}
+			if name != scenario {
+				cfg.IdentityPolicy = &IdentityPolicy{LocalIDType: ikev2.ID_RFC822_ADDR, RequestedIDrType: ikev2.ID_FQDN,
+					Peer: &PeerIdentity{Type: ikev2.ID_FQDN, Data: []byte(testIDrFQDN)}}
+			}
+			s := NewSession(cfg, log)
 			driverFailure := errors.New("synthetic dataplane setup failure")
 			if name == "dataplane_failure" {
 				s.cfg.EnableDriver = true
 				s.cfg.TUNFactory = func(string) (TUN, error) { return nil, driverFailure }
 			}
 			assertNoNegotiatedSecurity(t, s)
+			assertIdentityPolicySnapshot(t, s, 0, 0, false)
 			ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second)
 			done := make(chan error, 1)
 			go func() { done <- s.Connect(ctx) }()
@@ -70,6 +78,7 @@ func TestNegotiatedSecuritySnapshotUsesActualAuthenticatedSelection(t *testing.T
 			initial := peer.decrypt(t, peer.receive(t))
 			assertAKAWireInitial(t, initial)
 			assertNoNegotiatedSecurity(t, s)
+			assertIdentityPolicySnapshot(t, s, 0, 0, false)
 			idr := append([]byte{2, 0, 0, 0}, []byte(testIDrFQDN)...)
 			peer.send(t, peer.protect(t, []akaWirePayload{{kind: 36, body: idr}, {kind: 48, body: referenceChallenge(material[16:32], false)}}))
 			response := peer.decrypt(t, peer.receive(t))
@@ -109,6 +118,7 @@ func TestNegotiatedSecuritySnapshotUsesActualAuthenticatedSelection(t *testing.T
 					t.Fatal("invalid AUTH did not terminate within the bounded exchange")
 				}
 				assertNoNegotiatedSecurity(t, s)
+				assertIdentityPolicySnapshot(t, s, 0, 0, false)
 				return
 			}
 			if name == "dataplane_failure" {
@@ -121,6 +131,7 @@ func TestNegotiatedSecuritySnapshotUsesActualAuthenticatedSelection(t *testing.T
 					t.Fatal("dataplane failure did not retire its owner")
 				}
 				assertNoNegotiatedSecurity(t, s)
+				assertIdentityPolicySnapshot(t, s, 0, 0, false)
 				return
 			}
 			select {
@@ -133,6 +144,7 @@ func TestNegotiatedSecuritySnapshotUsesActualAuthenticatedSelection(t *testing.T
 			if provider.calls != 1 || !s.Snapshot().Established {
 				t.Fatal("selection test did not complete one authenticated Child exchange")
 			}
+			assertIdentityPolicySnapshot(t, s, 0, 0, false)
 			var got, want any
 			const expected = `{"IKE":{"Encryption":12,"KeyBits":256,"Integrity":12,"PRF":5,"DH":14},"Child":{"Encryption":12,"KeyBits":256,"Integrity":12,"ESN":false,"PFS":0}}`
 			if json.Unmarshal(snapshotSecurityJSON(t, s), &got) != nil || json.Unmarshal([]byte(expected), &want) != nil || !reflect.DeepEqual(got, want) {
