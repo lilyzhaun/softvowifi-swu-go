@@ -1,6 +1,9 @@
 package eap
 
-import "errors"
+import (
+	"bytes"
+	"errors"
+)
 
 // 快速重认证状态
 type ReauthState struct {
@@ -17,7 +20,7 @@ type ReauthState struct {
 type FastReauthContext struct {
 	Enabled      bool
 	ReauthID     string // 当前重认证 ID
-	Counter      uint16
+	Counter      uint16 // Last accepted counter; zero after full authentication.
 	NonceS       []byte // 服务器 Nonce
 	CounterSmall bool   // AT_COUNTER_TOO_SMALL 标志
 
@@ -37,9 +40,9 @@ func NewFastReauthContext() *FastReauthContext {
 // SaveReauthData 保存重认证数据 (从 AT_NEXT_REAUTH_ID 获取)
 func (ctx *FastReauthContext) SaveReauthData(nextReauthID string, mk, kEncr, kAut []byte) {
 	ctx.ReauthID = nextReauthID
-	ctx.MK = mk
-	ctx.KEncr = kEncr
-	ctx.KAut = kAut
+	ctx.MK = bytes.Clone(mk)
+	ctx.KEncr = bytes.Clone(kEncr)
+	ctx.KAut = bytes.Clone(kAut)
 	ctx.Enabled = true
 	ctx.Counter = 0
 }
@@ -53,6 +56,8 @@ func (ctx *FastReauthContext) CanUseReauth() bool {
 var ErrReauthCounterTooSmall = errors.New("EAP-AKA re-auth counter too small, fallback to full auth")
 
 // BuildReauthResponse 构建重认证响应
+// Deprecated: this legacy scalar builder does not encrypt the attributes and
+// is NOT a complete RFC 4187 response. Session uses the protected wire consumer.
 // AT_COUNTER + AT_MAC
 // 若服务器计数器不大于本地缓存（RFC 4187 §5.4），返回 ErrReauthCounterTooSmall，
 // 调用方应回退全量认证

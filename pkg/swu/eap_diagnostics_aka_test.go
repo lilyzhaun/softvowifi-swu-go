@@ -179,24 +179,26 @@ func Test_EAPDiagnostics_whenValidChallengeUpdatesPseudonym(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	value := binary.BigEndian.AppendUint16(nil, uint16(len(pseudonym)))
-	packet.Data = append(packet.Data, (&eap.Attribute{Type: eap.AT_NEXT_REAUTH_ID, Value: append(value, pseudonym...)}).Encode()...)
-	raw := packet.Encode()
-	clear(raw[12:28])
 	master := sha1.New()
 	master.Write([]byte(buildNAI("001010000000001", cfg)))
 	master.Write([]byte("PRIVATE-IK-12345"))
 	master.Write([]byte("PRIVATE-CK-12345"))
 	keyMaterial := crypto.NewFIPS1862PRFSHA1(master.Sum(nil)).Bytes(nil, 48)
-	mac := hmac.New(sha1.New, keyMaterial[16:32])
-	mac.Write(raw)
-	copy(raw[12:28], mac.Sum(nil)[:16])
+	var outer []byte
+	for offset := 0; offset < len(packet.Data); {
+		n := int(packet.Data[offset+1]) * 4
+		if packet.Data[offset] != eap.AT_MAC && packet.Data[offset] != eap.AT_ENCR_DATA {
+			outer = append(outer, packet.Data[offset:offset+n]...)
+		}
+		offset += n
+	}
+	raw := independentProtectedAKARequest(t, 1, independentIdentityAttribute(eap.AT_NEXT_REAUTH_ID, pseudonym), keyMaterial[:16], keyMaterial[16:32], outer)
 	response, err := sess.handleEAP(raw)
 	if err != nil || len(response) != 1 {
 		t.Fatal("valid challenge failed")
 	}
-	if callbackCalls != 1 || provider.akaCalls != 1 || provider.imsiCalls != 2 || sess.fastReauthCtx.ReauthID != pseudonym {
-		t.Fatal("callback/SIM behavior changed")
+	if callbackCalls != 0 || provider.akaCalls != 1 || provider.imsiCalls != 1 || sess.fastReauthCtx.ReauthID != "" || sess.akaPending == nil || sess.akaPending.ReauthID != pseudonym {
+		t.Fatal("SIM behavior changed or identity escaped before final IKE authentication")
 	}
 	assertDiagnosticPrivacy(t, output, []byte("PRIVATE-"), []byte("001010000000001"))
 }

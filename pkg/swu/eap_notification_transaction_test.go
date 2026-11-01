@@ -252,6 +252,7 @@ func TestNotificationConnectSendsACKThenTerminatesFailure(t *testing.T) {
 	peer := newAKAWirePeer(t)
 	provider := &notificationTrackingSIM{}
 	s := NewSession(&Config{SIM: provider, LocalAddr: "127.0.0.1", EpDGAddr: "127.0.0.1", EpDGPort: uint16(peer.conn.LocalAddr().(*net.UDPAddr).Port), FastReauthID: "synthetic@invalid"}, nil)
+	s.cfg.OnTemporaryIdentityUpdate = acceptSyntheticTemporaryIdentity
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	finished := make(chan error, 1)

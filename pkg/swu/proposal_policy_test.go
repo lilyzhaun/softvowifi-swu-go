@@ -77,6 +77,7 @@ func TestProposalPolicyCapturesOrderedCompleteSuitesAndCookie(t *testing.T) {
 	c.IKEProposals[0], c.ESPProposals[0] = "not-a-suite", "not-a-suite"
 	c.IKEProposalLayout, c.IKEDHGroup = "single-combined", 2
 	c.FastReauthID = "synthetic@invalid"
+	c.OnTemporaryIdentityUpdate = acceptSyntheticTemporaryIdentity
 	payloads, err := s.buildIKEAuthInitPayloads()
 	if err != nil {
 		t.Fatal(err)

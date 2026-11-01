@@ -2,6 +2,8 @@ package swu
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -9,7 +11,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/1239t/swu-go/pkg/crypto"
 	"github.com/1239t/swu-go/pkg/eap"
 	"github.com/1239t/swu-go/pkg/ikev2"
 )
@@ -60,6 +61,7 @@ func type23ReauthSession(t *testing.T, counter uint16, mk, kAut []byte) *Session
 		t.Fatal("fast reauth cache not populated from Config")
 	}
 	sess.fastReauthCtx.Counter = counter
+	sess.akaIdentity.outer = []byte("reauth-synth-id")
 	return sess
 }
 
@@ -108,10 +110,25 @@ func independentType23ReauthResponseMAC(kAut, raw, nonceS []byte) []byte {
 }
 
 func type23ReauthRequest(id uint8, counter uint16, nonceS, mac []byte, order []uint8) []byte {
+	// Keep the original six order permutations while putting the nonce and
+	// counter inside the mandatory encrypted container. These two order keys
+	// now stand for IV and ENCR_DATA; neither scalar is sent in the clear.
+	plain := append([]byte{eap.AT_COUNTER, 1, byte(counter >> 8), byte(counter), eap.AT_NONCE_S, 5, 0, 0}, nonceS...)
+	plain = append(plain, independentIdentityAttribute(eap.AT_NEXT_REAUTH_ID, "next-synth-id")...)
+	if n := (16 - len(plain)%16) % 16; n != 0 {
+		plain = append(plain, eap.AT_PADDING, byte(n/4))
+		plain = append(plain, make([]byte, n-2)...)
+	}
+	iv := bytes.Repeat([]byte{0x66}, 16)
+	block, err := aes.NewCipher(bytes.Repeat([]byte{0x44}, 16))
+	if err != nil {
+		panic(err)
+	}
+	cipher.NewCBCEncrypter(block, iv).CryptBlocks(plain, plain)
 	attrs := map[uint8]*eap.Attribute{
-		eap.AT_NONCE_S: {Type: eap.AT_NONCE_S, Value: append([]byte{0, 0}, nonceS...)},
+		eap.AT_NONCE_S: {Type: eap.AT_IV, Value: append([]byte{0, 0}, iv...)},
 		eap.AT_MAC:     {Type: eap.AT_MAC, Value: append([]byte{0, 0}, mac...)},
-		eap.AT_COUNTER: {Type: eap.AT_COUNTER, Value: []byte{byte(counter >> 8), byte(counter)}},
+		eap.AT_COUNTER: {Type: eap.AT_ENCR_DATA, Value: append([]byte{0, 0}, plain...)},
 	}
 	var data []byte
 	for _, attrType := range order {
@@ -140,7 +157,6 @@ func Test_handleEAP_Type23Reauth_acceptsValidMAC_whenCachePresent(t *testing.T) 
 	kAut := bytes.Repeat([]byte{0x22}, 16)
 	nonceS := bytes.Repeat([]byte{0x33}, 16)
 	sess := type23ReauthSession(t, 20, mk, kAut)
-	before := snapReauth(sess)
 	raw := signedType23ReauthRequest(7, 30, nonceS, kAut, defaultReauthOrder)
 
 	// When
@@ -150,12 +166,12 @@ func Test_handleEAP_Type23Reauth_acceptsValidMAC_whenCachePresent(t *testing.T) 
 	if err != nil || len(payloads) != 1 {
 		t.Fatalf("valid Type23 reauth rejected: err=%v n=%d", err, len(payloads))
 	}
-	wantMSK := crypto.NewFIPS1862PRFSHA1(mk).Bytes(nil, 16+16+64)[32:96]
+	wantMSK := referenceHex(t, "40edb701d2d5a9b3dda2601a5e30a7ecf561e5611ff50dfea0fc7cfe643ae34fd53ee85532c0c1cb1f85395015799b724001e4f813a72cbd66f950b527b6557c")
 	if !bytes.Equal(sess.MSK, wantMSK) {
 		t.Fatal("MSK differs from independent FIPS186-2 expansion")
 	}
-	if sess.fastReauthCtx.Counter != 30 || sess.fastReauthCtx.ReauthID != before.id || !sess.fastReauthCtx.Enabled {
-		t.Fatal("cache identity/counter not committed on valid reauth")
+	if sess.fastReauthCtx.CanUseReauth() || sess.akaPending == nil || sess.akaPending.Counter != 30 || sess.akaPending.ReauthID != "next-synth-id" {
+		t.Fatal("next identity/counter not staged or old one-time identity remained reusable")
 	}
 	resp, ok := payloads[0].(*ikev2.EncryptedPayloadEAP)
 	if !ok {
@@ -188,17 +204,10 @@ func Test_handleEAP_Type23Reauth_rejectsInvalidMAC_whenCachePresent(t *testing.T
 		name string
 		raw  []byte
 	}{
-		{"missing", (&eap.EAPPacket{Code: eap.CodeRequest, Identifier: 7, Type: eap.TypeAKA, Subtype: eap.SubtypeReauthentication, Data: append(
-			(&eap.Attribute{Type: eap.AT_NONCE_S, Value: append([]byte{0, 0}, nonceS...)}).Encode(),
-			(&eap.Attribute{Type: eap.AT_COUNTER, Value: []byte{0, 30}}).Encode()...,
-		)}).Encode()},
+		{"missing", type23ReauthRequest(7, 30, nonceS, nil, []byte{eap.AT_NONCE_S, eap.AT_COUNTER})},
 		{"zero", type23ReauthRequest(7, 30, nonceS, make([]byte, 16), defaultReauthOrder)},
 		{"tampered", tampered},
-		{"truncated", (&eap.EAPPacket{Code: eap.CodeRequest, Identifier: 7, Type: eap.TypeAKA, Subtype: eap.SubtypeReauthentication, Data: append(append(
-			(&eap.Attribute{Type: eap.AT_NONCE_S, Value: append([]byte{0, 0}, nonceS...)}).Encode(),
-			(&eap.Attribute{Type: eap.AT_MAC, Value: []byte{0, 0}}).Encode()...),
-			(&eap.Attribute{Type: eap.AT_COUNTER, Value: []byte{0, 30}}).Encode()...,
-		)}).Encode()},
+		{"truncated", type23ReauthRequest(7, 30, nonceS, nil, defaultReauthOrder)},
 		{"cross_family_sha256", crossFamily},
 	}
 	for _, tc := range cases {
@@ -227,9 +236,10 @@ func Test_handleEAP_Type23Reauth_fallsBack_whenMACValidAndCounterTooSmall(t *tes
 
 	payloads, err := sess.handleEAP(raw)
 
-	if !errors.Is(err, ErrReauth) || len(payloads) != 0 || sess.MSK != nil {
-		t.Fatalf("expected full-auth fallback without MSK, err=%v n=%d msk=%d", err, len(payloads), len(sess.MSK))
+	if err != nil || len(payloads) != 1 || sess.MSK != nil || sess.fastReauthCtx.CanUseReauth() {
+		t.Fatalf("expected in-exchange full-auth fallback without MSK, err=%v n=%d msk=%d", err, len(payloads), len(sess.MSK))
 	}
+	assertEncryptedReauthResponse(t, payloads, 20, bytes.Repeat([]byte{0x33}, 16), bytes.Repeat([]byte{0x44}, 16), kAut, true)
 }
 
 func Test_handleEAP_Type23Reauth_leavesCounterUnchanged_whenMACInvalid(t *testing.T) {
@@ -266,7 +276,7 @@ func Test_handleEAP_Type23Reauth_attributeOrderPermutations_whenMACValid(t *test
 		{eap.AT_COUNTER, eap.AT_NONCE_S, eap.AT_MAC},
 		{eap.AT_COUNTER, eap.AT_MAC, eap.AT_NONCE_S},
 	}
-	wantMSK := crypto.NewFIPS1862PRFSHA1(mk).Bytes(nil, 16+16+64)[32:96]
+	wantMSK := referenceHex(t, "b46dd8eba342b951e736785f5bd0a6253bc444c389908f9648ba5b2d89d626026e00788f524603cbe69f1d370a14f228a7c34ff36751ce4652c0b2feb27122ce")
 	for _, order := range orders {
 		t.Run(fmt.Sprintf("%d-%d-%d", order[0], order[1], order[2]), func(t *testing.T) {
 			sess := type23ReauthSession(t, 4, mk, kAut)
@@ -277,8 +287,8 @@ func Test_handleEAP_Type23Reauth_attributeOrderPermutations_whenMACValid(t *test
 			if err != nil || len(payloads) != 1 {
 				t.Fatalf("valid permutation rejected: err=%v", err)
 			}
-			if !bytes.Equal(sess.MSK, wantMSK) || sess.fastReauthCtx.Counter != 8 {
-				t.Fatal("permutation changed MSK or counter commit")
+			if !bytes.Equal(sess.MSK, wantMSK) || sess.akaPending == nil || sess.akaPending.Counter != 8 || sess.fastReauthCtx.CanUseReauth() {
+				t.Fatal("permutation changed MSK or staged counter/old identity retirement")
 			}
 			resp := payloads[0].(*ikev2.EncryptedPayloadEAP)
 			if !bytes.Equal(resp.EAPMessage[len(resp.EAPMessage)-16:], independentType23ReauthResponseMAC(kAut, resp.EAPMessage, nonceS)) {
@@ -297,9 +307,11 @@ func Test_handleEAP_Type23Reauth_rejectsInvalidMAC_whenDisableEAPMACValidation(t
 		FastReauthID:            "reauth-synth-id",
 		FastReauthMK:            mk,
 		FastReauthKAut:          kAut,
+		FastReauthKEncr:         bytes.Repeat([]byte{0x44}, 16),
 		DisableEAPMACValidation: true,
 	}, log)
 	sess.fastReauthCtx.Counter = 20
+	sess.akaIdentity.outer = []byte("reauth-synth-id")
 	before := snapReauth(sess)
 	raw := type23ReauthRequest(7, 30, bytes.Repeat([]byte{0x33}, 16), make([]byte, 16), defaultReauthOrder)
 
@@ -310,6 +322,20 @@ func Test_handleEAP_Type23Reauth_rejectsInvalidMAC_whenDisableEAPMACValidation(t
 	}
 	if !before.equalCache(snapReauth(sess)) {
 		t.Fatal("disabled-flag reject mutated cache")
+	}
+	valid := signedType23ReauthRequest(7, 30, bytes.Repeat([]byte{0x33}, 16), kAut, defaultReauthOrder)
+	tampered := bytes.Clone(valid)
+	for offset := 8; offset < len(tampered); offset += int(tampered[offset+1]) * 4 {
+		if tampered[offset] == eap.AT_MAC {
+			tampered[offset+4] ^= 1
+			break
+		}
+	}
+	if payloads, err := sess.handleEAP(tampered); err == nil || len(payloads) != 0 || sess.MSK != nil || !before.equalCache(snapReauth(sess)) {
+		t.Fatal("DisableEAPMACValidation bypassed a nonzero incorrect reauth MAC")
+	}
+	if payloads, err := sess.handleEAP(valid); err != nil || len(payloads) != 1 || len(sess.MSK) != 64 {
+		t.Fatal("disabled-flag MAC rejection did not have a valid positive control")
 	}
 }
 

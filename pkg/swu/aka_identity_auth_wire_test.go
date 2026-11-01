@@ -239,6 +239,7 @@ func Test_AKAIdentity_AUTH1BodyOwnedAndAttemptScoped(t *testing.T) {
 	sess, _ := newPostEAPSession(t)
 	sess.resetIKEAuthTranscripts()
 	sess.cfg.FastReauthID = "immutable-pseudonym@public.invalid"
+	sess.cfg.OnTemporaryIdentityUpdate = acceptSyntheticTemporaryIdentity
 	payloads, err := sess.buildIKEAuthInitPayloads()
 	if err != nil {
 		t.Fatal(err)
@@ -268,6 +269,7 @@ func Test_AKAIdentity_AUTH1RejectsChangedBodyWithinAttempt(t *testing.T) {
 	sess, _ := newPostEAPSession(t)
 	original := bytes.Clone(sess.localIDiBody)
 	sess.cfg.FastReauthID = "different-pseudonym@public.invalid"
+	sess.cfg.OnTemporaryIdentityUpdate = acceptSyntheticTemporaryIdentity
 	payloads, err := sess.buildIKEAuthInitPayloads()
 	if err == nil || len(payloads) != 0 || !bytes.Equal(sess.localIDiBody, original) {
 		t.Fatal("second AUTH1 changed frozen IDi body")

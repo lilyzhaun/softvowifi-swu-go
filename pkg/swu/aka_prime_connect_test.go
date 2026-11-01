@@ -20,6 +20,7 @@ func TestPrimeConnectPublishedVectorReachesFinalAUTH(t *testing.T) {
 		v := primeStandardVectors[0]
 		s, p := primeStandardSession(t, v)
 		s.cfg.FastReauthID = primePublicIdentity
+		s.cfg.OnTemporaryIdentityUpdate = acceptSyntheticTemporaryIdentity
 		s.cfg.LocalAddr, s.cfg.EpDGAddr = "127.0.0.1", "127.0.0.1"
 		s.cfg.EpDGPort = uint16(peer.conn.LocalAddr().(*net.UDPAddr).Port)
 		s.cfg.APN = "ims"
