@@ -68,6 +68,9 @@ func (s *Session) captureEAPIDr(payloads []ikev2.Payload) error {
 	if body == nil {
 		return nil
 	}
+	if err := s.checkPeerIdentity(body); err != nil {
+		return err
+	}
 	if len(s.peerIDrBody) > 0 && !hmac.Equal(s.peerIDrBody, body) {
 		return authFail("idr")
 	}
@@ -81,6 +84,9 @@ func (s *Session) lookupIDrBody(payloads []ikev2.Payload) ([]byte, error) {
 		return nil, err
 	}
 	if body != nil {
+		if err := s.checkPeerIdentity(body); err != nil {
+			return nil, err
+		}
 		if len(s.peerIDrBody) > 0 && !hmac.Equal(s.peerIDrBody, body) {
 			return nil, authFail("idr")
 		}

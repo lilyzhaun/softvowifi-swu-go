@@ -30,6 +30,9 @@ type Config struct {
 	// candidates. Empty preserves compatibility. Explicit policies require the
 	// built-in Connect transport; custom factories and MOBIKE reject them.
 	RemoteAddressFamily ipsec.AddressFamilyPolicy
+	// IdentityPolicy is captured by NewSession. Source NAI/APN and EAP method
+	// identities keep their existing paths; this is not a static local-ID override.
+	IdentityPolicy *IdentityPolicy
 
 	SIM          sim.SIMProvider
 	EnableDriver bool // 是否创建 TUN 和路由 (需要 root)

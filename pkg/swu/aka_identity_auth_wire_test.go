@@ -41,7 +41,7 @@ func testAKAIdentityAUTH(t *testing.T, layout string) {
 	t.Helper()
 	peer := newAKAWirePeer(t)
 	send := func(payloads []akaWirePayload) {
-		if layout == "unfragmented" || layout == "notification" || layout == "idr-reserved-plain" || strings.HasPrefix(layout, "device") {
+		if layout == "unfragmented" || layout == "notification" || layout == "idr-reserved-plain" || strings.HasPrefix(layout, "device") || strings.HasPrefix(layout, "identity-") {
 			peer.send(t, peer.protect(t, payloads))
 			return
 		}
@@ -54,6 +54,14 @@ func testAKAIdentityAUTH(t *testing.T, layout string) {
 	sess.cfg.APN = "ims"
 	if strings.HasPrefix(layout, "device") {
 		sess.cfg.IMEI = "123456789012345"
+	}
+	if strings.HasPrefix(layout, "identity-") {
+		localType, requestedType := uint8(ikev2.ID_RFC822_ADDR), uint8(ikev2.ID_FQDN)
+		if layout == "identity-key-id" {
+			localType, requestedType = ikev2.ID_KEY_ID, ikev2.ID_KEY_ID
+		}
+		setIdentityPolicyForTest(t, sess.cfg, localType, requestedType, []byte(testIDrFQDN))
+		sess = NewSession(sess.cfg, sess.Logger)
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	finished := make(chan struct{})
@@ -82,6 +90,12 @@ func testAKAIdentityAUTH(t *testing.T, layout string) {
 	}
 	idiBody := bytes.Clone(initial[0].body)
 	wantIDi := append([]byte{3, 0, 0, 0}, []byte("original-pseudonym@public.invalid")...)
+	if layout == "identity-key-id" {
+		wantIDi[0] = ikev2.ID_KEY_ID
+		if len(initial) < 2 || initial[1].kind != 36 || !bytes.Equal(initial[1].body, append([]byte{ikev2.ID_KEY_ID, 0, 0, 0}, []byte("ims")...)) {
+			t.Fatal("requested IDr did not use captured KEY_ID with the APN value")
+		}
+	}
 	if !bytes.Equal(idiBody, wantIDi) {
 		t.Fatal("fixture must emit pseudonym IDi")
 	}
@@ -177,7 +191,7 @@ func testAKAIdentityAUTH(t *testing.T, layout string) {
 		{kind: 44, body: []byte{1, 0, 0, 0, 7, 0, 0, 16, 0, 0, 255, 255, 192, 0, 2, 10, 192, 0, 2, 10}},
 		{kind: 45, body: []byte{1, 0, 0, 0, 7, 0, 0, 16, 0, 0, 255, 255, 0, 0, 0, 0, 255, 255, 255, 255}},
 	}
-	if layout != "unfragmented" && layout != "notification" && layout != "idr-reserved-plain" && !strings.HasPrefix(layout, "device") {
+	if layout != "unfragmented" && layout != "notification" && layout != "idr-reserved-plain" && !strings.HasPrefix(layout, "device") && !strings.HasPrefix(layout, "identity-") {
 		final = append(final, akaWirePayload{kind: 41, body: independentNotifyBody(16432, bytes.Repeat([]byte{0x71}, 3000))})
 	}
 	send(final)

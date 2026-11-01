@@ -14,6 +14,7 @@ IMS/SIP注册、短信投递、语音媒体、Android SIM接线和账户开通�
 - 初始ESP完整CBC256/SHA2-512报价。
 - 显式有序IKE/ESP策略选择已支持的完整套件闭集；捕获、布局与重键边界见[报价策略](docs/proposal-policy.md)。
 - 可选的完整[续期策略](docs/renewal-policy.md)独立接入SA寿命、重新认证、DPD、NAT保活和请求重传；未设置时保留原兼容基线，配置值不冒网侧协商事实。
+- 可选的[IKE身份策略](docs/identity-policy.md)捕获NAI/APN的线格式类型及独立对端身份约束，保持原始AUTH字节和实际EAP身份。
 - Child SA换钥/删除的本端入向SPI语义，以及按会话归属回收规则/策略。
 
 详见[来源与维护记录](PROVENANCE.md)、[错误透传](docs/ike-auth-final-reject.md)、
