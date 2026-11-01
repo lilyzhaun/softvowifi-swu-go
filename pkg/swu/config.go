@@ -13,9 +13,14 @@ type Config struct {
 	DiagnosticRemoteIP netip.Addr
 	EpDGAddr           string
 	EpDGPort           uint16 // 默认 500
-	APN                string
-	LocalAddr          string // 传出接口 IP (通常自动检测)
-	DNSServer          string // 可选: 用于解析 ePDG 域名的 DNS 服务器 (host:port)
+	// ReturnInitialRedirect hands a pre-establishment redirect back to the
+	// caller after cleanup, without changing EpDGAddr or reusing this Session.
+	// The caller owns target validation, a bounded redirect budget, and any
+	// endpoint-scoped identity reload. False preserves internal redirection.
+	ReturnInitialRedirect bool
+	APN                   string
+	LocalAddr             string // 传出接口 IP (通常自动检测)
+	DNSServer             string // 可选: 用于解析 ePDG 域名的 DNS 服务器 (host:port)
 	// SocketControl binds both DNS and the outer UDP/ESP socket before bind or
 	// traffic. A failed selected network never retries without this control.
 	SocketControl func(network, address string, raw syscall.RawConn) error

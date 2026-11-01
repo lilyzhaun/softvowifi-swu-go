@@ -314,6 +314,12 @@ func (s *Session) Connect(ctx context.Context) error {
 
 		// 检查是否是重定向错误
 		if redir, ok := err.(*RedirectError); ok {
+			if s.cfg.ReturnInitialRedirect {
+				if s.cfg.DiagnosticRemoteIP.IsValid() {
+					return ErrDiagnosticRedirect
+				}
+				return redir
+			}
 			if redirectCount >= maxRedirects {
 				return fmt.Errorf("exceeded max redirects (%d)", maxRedirects)
 			}

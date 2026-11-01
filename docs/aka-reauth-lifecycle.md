@@ -39,6 +39,14 @@ can be delivered through it, and fast-auth completion clears it. Legacy
 restored identities also require at least one update callback before exposure.
 New consumers should use the error-bearing callback exclusively.
 
+For endpoint-scoped storage, set `Config.ReturnInitialRedirect`. A redirect
+received before establishment then returns `*RedirectError` to the caller
+after Connect cleanup, leaving the original `EpDGAddr` unchanged. Apply the
+target and redirect budget in the caller, reload the target's private scope,
+and create a fresh Session. This avoids carrying a restored identity into a
+different endpoint inside the old Session. The zero value preserves internal
+redirection; a fixed diagnostic endpoint still rejects redirection.
+
 ## Protocol behavior
 
 Integrity is verified before encrypted identity attributes are interpreted.
