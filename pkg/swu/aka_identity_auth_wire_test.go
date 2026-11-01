@@ -41,7 +41,7 @@ func testAKAIdentityAUTH(t *testing.T, layout string) {
 	t.Helper()
 	peer := newAKAWirePeer(t)
 	send := func(payloads []akaWirePayload) {
-		if layout == "unfragmented" || layout == "notification" || strings.HasPrefix(layout, "device") {
+		if layout == "unfragmented" || layout == "notification" || layout == "idr-reserved-plain" || strings.HasPrefix(layout, "device") {
 			peer.send(t, peer.protect(t, payloads))
 			return
 		}
@@ -145,6 +145,9 @@ func testAKAIdentityAUTH(t *testing.T, layout string) {
 		successID = 0x87
 	}
 	idrBody := append([]byte{2, 0, 0, 0}, []byte(testIDrFQDN)...)
+	if strings.HasPrefix(layout, "idr-reserved-") {
+		copy(idrBody[1:4], []byte{0x91, 0x42, 0xf3})
+	}
 	send([]akaWirePayload{
 		{kind: 36, body: idrBody}, {kind: 48, body: []byte{3, successID, 0, 4}},
 	})
@@ -174,7 +177,7 @@ func testAKAIdentityAUTH(t *testing.T, layout string) {
 		{kind: 44, body: []byte{1, 0, 0, 0, 7, 0, 0, 16, 0, 0, 255, 255, 192, 0, 2, 10, 192, 0, 2, 10}},
 		{kind: 45, body: []byte{1, 0, 0, 0, 7, 0, 0, 16, 0, 0, 255, 255, 0, 0, 0, 0, 255, 255, 255, 255}},
 	}
-	if layout != "unfragmented" && layout != "notification" && !strings.HasPrefix(layout, "device") {
+	if layout != "unfragmented" && layout != "notification" && layout != "idr-reserved-plain" && !strings.HasPrefix(layout, "device") {
 		final = append(final, akaWirePayload{kind: 41, body: independentNotifyBody(16432, bytes.Repeat([]byte{0x71}, 3000))})
 	}
 	send(final)
