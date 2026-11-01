@@ -50,7 +50,7 @@ func identitySession(t *testing.T) (*Session, *vectorSIM) {
 		ik:  referenceHex(t, "0b48923d40b48c476b0ee8a43f780356"),
 	}
 	log, _ := diagnosticLogger()
-	return NewSession(&Config{SIM: provider}, log), provider
+	return NewSession(&Config{SIM: provider, OnTemporaryIdentityUpdate: acceptSyntheticTemporaryIdentity}, log), provider
 }
 
 func Test_AKAIdentity_permanentNAI_whenValidRequest(t *testing.T) {
@@ -104,7 +104,9 @@ func Test_AKAIdentity_challengeUsesLastWireIdentity_whenOuterDiffers(t *testing.
 	if string(outer[5:]) == identityNAI {
 		t.Fatal("fixture must have distinct outer and inner identity")
 	}
-	request := identityRequest(0xcd, 13, 1, 0, 0)
+	// Explicit full-auth request must replace the outer fast identity; ANY
+	// now legitimately permits the fast identity within this same exchange.
+	request := identityRequest(0xcd, 17, 1, 0, 0)
 	response := identityEAP(t, sess, request)
 	if !bytes.Equal(response, identityResponse(0xcd, identityNAI)) {
 		t.Fatal("permanent-only identity policy changed")

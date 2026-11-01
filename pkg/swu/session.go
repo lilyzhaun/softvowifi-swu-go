@@ -169,7 +169,14 @@ type Session struct {
 	resumeOldSKd []byte // 存放被销毁前一任 IKE_SA 的引流密钥 SK_d
 
 	// RFC 4187: EAP-AKA Fast Re-authentication
-	fastReauthCtx *eap.FastReauthContext // 快速重连上下文(假名+密钥缓存)
+	fastReauthCtx           *eap.FastReauthContext // 快速重连上下文(假名+密钥缓存)
+	akaReauth               akaReauthExchange
+	akaPending              *AKATemporaryIdentity
+	akaPseudonym            string
+	akaFastConsumed         bool
+	akaUsedFastID           string
+	akaChallenge            akaIdentityExchange
+	akaHasTemporaryIdentity bool
 
 	mobikeSupported        bool            // 对端是否支持 MOBIKE (RFC 4555)
 	fragmentationSupported bool            // 对端是否支持 IKE Fragmentation (RFC 7383)
@@ -234,7 +241,7 @@ func NewSession(cfg *Config, l *zap.Logger) *Session {
 	}
 
 	identityPolicy, identityPolicyErr := compileIdentityPolicy(cfg.IdentityPolicy)
-	return &Session{
+	s := &Session{
 		cfg:               cfg,
 		Logger:            l,
 		net:               netTools,
@@ -257,11 +264,24 @@ func NewSession(cfg *Config, l *zap.Logger) *Session {
 		identityPolicy:      identityPolicy,
 		identityPolicyErr:   identityPolicyErr,
 	}
+	if cfg.TemporaryIdentity != nil {
+		s.akaPseudonym = cfg.TemporaryIdentity.Pseudonym
+		s.akaHasTemporaryIdentity = true
+	}
+	return s
 }
 
 // initFastReauthCtx 从外层 Config 恢复快速重认证上下文
 func initFastReauthCtx(cfg *Config) *eap.FastReauthContext {
 	ctx := eap.NewFastReauthContext()
+	if cfg.TemporaryIdentity != nil {
+		v := cfg.TemporaryIdentity.clone()
+		if v.ReauthID != "" && len(v.MK) == 20 && len(v.KAut) == 16 && len(v.KEncr) == 16 && v.Counter < 65535 {
+			ctx.SaveReauthData(v.ReauthID, v.MK, v.KEncr, v.KAut)
+			ctx.Counter = v.Counter
+		}
+		return ctx
+	}
 	if cfg.FastReauthID != "" && len(cfg.FastReauthMK) > 0 {
 		ctx.SaveReauthData(cfg.FastReauthID, cfg.FastReauthMK, cfg.FastReauthKEncr, cfg.FastReauthKAut)
 	}
@@ -317,6 +337,7 @@ func (s *Session) connectOnce() (result error) {
 		return err
 	}
 	defer func() {
+		s.akaPending = nil
 		s.childMu.Lock()
 		s.security = nil
 		s.childMu.Unlock()
@@ -581,9 +602,12 @@ func (s *Session) connectOnce() (result error) {
 			return context.Cause(s.ctx)
 		}
 		s.publishNegotiatedSecurity()
-		if s.cfg.OnReady != nil {
-			s.cfg.OnReady()
-		}
+	}
+	if err := s.publishTemporaryIdentity(); err != nil {
+		return err
+	}
+	if s.cfg.EnableDriver && s.cfg.OnReady != nil {
+		s.cfg.OnReady()
 	}
 
 	s.startIKEControlLoop()

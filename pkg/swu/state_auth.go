@@ -1,6 +1,7 @@
 package swu
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/binary"
@@ -28,15 +29,17 @@ func (s *Session) buildIKEAuthInitPayloads() ([]ikev2.Payload, error) {
 
 	// 1. IDi
 	var nai string
-	if s.cfg.FastReauthID != "" && !s.akaPermanentIdentity {
+	if !s.akaHasTemporaryIdentity && !s.fastReauthCtx.CanUseReauth() && s.cfg.FastReauthID != "" && !s.akaPermanentIdentity && !s.akaFastConsumed {
 		nai = s.cfg.FastReauthID
-		s.Logger.Info("IKE_AUTH: 探测到缓存的 FastReauthID 假名，替代 IMSI 暴露身份")
+		if err := s.consumeFastIdentity(); err != nil {
+			return nil, err
+		}
 	} else {
-		imsi, err := s.cfg.SIM.GetIMSI()
+		identity, err := s.selectAKAIdentity(0)
 		if err != nil {
 			return nil, err
 		}
-		nai = buildNAI(imsi, s.cfg)
+		nai = string(identity)
 	}
 	if s.identityPolicy.explicit && (!validIdentityData(s.identityPolicy.localType, []byte(nai)) ||
 		!validIdentityData(s.identityPolicy.requestedType, []byte(s.cfg.APN))) {
@@ -137,7 +140,12 @@ func (s *Session) buildIKEAuthInitPayloads() ([]ikev2.Payload, error) {
 
 // handleEAP 处理从 ePDG 接收到的 EAP (Extensible Authentication Protocol) 报文。
 // 该方法负责解析 EAP 载荷，并根据 EAP 类型（如 Identity, AKA Challenge 等）生成相应的响应载荷。
-func (s *Session) handleEAP(eapRaw []byte) ([]ikev2.Payload, error) {
+func (s *Session) handleEAP(eapRaw []byte) (payloads []ikev2.Payload, result error) {
+	defer func() {
+		if result != nil {
+			s.akaPending = nil
+		}
+	}()
 	s.logEAPStage(eapReceived, eapRaw)
 	if s.akaIdentity.failed {
 		return nil, errors.New("EAP-AKA identity exchange failed")
@@ -157,6 +165,9 @@ func (s *Session) handleEAP(eapRaw []byte) ([]ikev2.Payload, error) {
 	}
 
 	if pkt.Code == eap.CodeSuccess {
+		if s.akaReauth.fallback && !s.eapNotification.authenticated {
+			return nil, errAKAReauthentication
+		}
 		if s.eapNotification.request != nil && pkt.Identifier != s.eapNotification.request[1] {
 			return nil, errEAPNotification
 		}
@@ -189,33 +200,37 @@ func (s *Session) handleEAP(eapRaw []byte) ([]ikev2.Payload, error) {
 		if len(s.akaIdentity.exchanges) > 0 || s.akaIdentity.closed {
 			return nil, errors.New("unexpected outer identity after AKA method started")
 		}
-		// 响应身份：若持有快速重连假名则优先使用，绕过物理 SIM 硬鉴权
-		var identity string
-		if s.fastReauthCtx != nil && s.fastReauthCtx.CanUseReauth() {
-			identity = s.fastReauthCtx.ReauthID
-			s.Logger.Info("EAP Identity: 使用缓存的 Fast Re-auth 假名替代 IMSI")
-		} else {
-			imsi, err := s.cfg.SIM.GetIMSI()
+		identity := s.akaIdentity.outer
+		if len(identity) == 0 || (!s.akaHasTemporaryIdentity && !s.fastReauthCtx.CanUseReauth() && s.akaPseudonym == "") {
+			identity, err = s.selectAKAIdentity(0)
 			if err != nil {
 				return nil, err
 			}
-			identity = buildNAI(imsi, s.cfg)
 		}
 
 		respPkt := &eap.EAPPacket{
 			Code:       eap.CodeResponse,
 			Identifier: pkt.Identifier,
 			Type:       eap.TypeIdentity,
-			Data:       []byte(identity),
+			Data:       identity,
 		}
 
 		eapPayload := &ikev2.EncryptedPayloadEAP{EAPMessage: respPkt.Encode()}
-		s.akaIdentity.outer = []byte(identity)
+		s.akaIdentity.outer = bytes.Clone(identity)
 		return []ikev2.Payload{eapPayload}, nil
 	}
 
 	// 处理 AKA 挑战
 	if pkt.Type == eap.TypeAKA && pkt.Subtype == eap.SubtypeChallenge {
+		if old := &s.akaChallenge; old.request != nil {
+			if !bytes.Equal(eapRaw, old.request) {
+				return nil, errAKAReauthentication
+			}
+			return notificationPayload(old.response), nil
+		}
+		if s.eapNotification.authenticated {
+			return nil, errAKAReauthentication
+		}
 		s.akaIdentity.closed = true
 		if err := s.validateAKACheckcode(pkt.Data); err != nil {
 			return s.akaIdentityClientError(pkt.Identifier)
@@ -224,6 +239,21 @@ func (s *Session) handleEAP(eapRaw []byte) ([]ikev2.Payload, error) {
 		attrs, err := eap.ParseAttributes(pkt.Data)
 		if err != nil {
 			return nil, err
+		}
+		strictAttrs, _, err := notificationAttributes(pkt.Data)
+		if err != nil || len(eapRaw) < 8 || int(binary.BigEndian.Uint16(eapRaw[2:4])) != len(eapRaw) {
+			return nil, errAKAReauthentication
+		}
+		for kind := range strictAttrs {
+			switch kind {
+			case eap.AT_RAND, eap.AT_AUTN, eap.AT_MAC:
+			case eap.AT_NEXT_REAUTH_ID, eap.AT_NEXT_PSEUDONYM:
+				return nil, errAKAReauthentication
+			default:
+				if kind < 128 {
+					return nil, errAKAReauthentication
+				}
+			}
 		}
 		s.logAKARequestStructure(attrs)
 		if attr, ok := attrs[eap.AT_RESULT_IND]; ok && len(attr.Value) != 2 {
@@ -296,6 +326,7 @@ func (s *Session) handleEAP(eapRaw []byte) ([]ikev2.Payload, error) {
 		tryOrders := []int{0, 1}
 		var kAut []byte
 		var msk []byte
+		var mk []byte
 		var macVerified bool
 		macOutcome := akaMACInvalid
 		var lastMacErr error
@@ -304,13 +335,14 @@ func (s *Session) handleEAP(eapRaw []byte) ([]ikev2.Payload, error) {
 			return nil, err
 		}
 		for _, order := range tryOrders {
-			kAutTry, mskTry, _, err := derive(order)
+			kAutTry, mskTry, mkTry, err := derive(order)
 			if err != nil {
 				return nil, err
 			}
 			if s.cfg.DisableEAPMACValidation {
 				kAut = kAutTry
 				msk = mskTry
+				mk = mkTry
 				macVerified = true
 				macOutcome = akaMACSkipped
 				break
@@ -318,6 +350,7 @@ func (s *Session) handleEAP(eapRaw []byte) ([]ikev2.Payload, error) {
 			if err := verifyEAPAKAMAC(eapRaw, pkt.Data, kAutTry, recvMac); err == nil {
 				kAut = kAutTry
 				msk = mskTry
+				mk = mkTry
 				macVerified = true
 				macOutcome = [2]akaMACOutcome{akaMACIKCK, akaMACCKIK}[order]
 				break
@@ -330,8 +363,14 @@ func (s *Session) handleEAP(eapRaw []byte) ([]ikev2.Payload, error) {
 			return nil, lastMacErr
 		}
 
-		s.MSK = msk
-		s.eapKAut = append([]byte(nil), kAut...)
+		var pending *AKATemporaryIdentity
+		if !s.cfg.DisableEAPMACValidation {
+			kEncr := crypto.NewFIPS1862PRFSHA1(mk).Bytes(nil, 16)
+			pending, err = s.fullAuthTemporaryIdentity(strictAttrs, mk, kAut, kEncr)
+			if err != nil {
+				return nil, err
+			}
+		}
 
 		// 构造响应：AT_RES [+ AT_RESULT_IND] + AT_MAC（对齐 SimAdmin eap_aka.rs）
 		respAttrs := []byte{}
@@ -383,41 +422,14 @@ func (s *Session) handleEAP(eapRaw []byte) ([]ikev2.Payload, error) {
 		s.logAKAResponseStructure(eapBytes, kAut, akaResponseExpectation{identifier: pkt.Identifier, resOctets: len(res)})
 		_, resultInd := attrs[eap.AT_RESULT_IND]
 		s.completedEAPMethod(eap.TypeAKA, kAut, resultInd, false, 0, nil)
+		s.MSK = msk
+		if s.eapNotification.authenticated {
+			s.akaPending = pending
+		}
+		s.akaChallenge = akaIdentityExchange{bytes.Clone(eapRaw), bytes.Clone(eapBytes)}
+		s.akaReauth = akaReauthExchange{}
 
 		eapPayload := &ikev2.EncryptedPayloadEAP{EAPMessage: eapBytes}
-
-		// 捕获 AT_NEXT_REAUTH_ID：若服务端下发了假名，则缓存供下次断线快连用
-		if atNextReauthID, ok := attrs[eap.AT_NEXT_REAUTH_ID]; ok && len(atNextReauthID.Value) > 2 {
-			// Value 前 2 字节是 actual_length，后面是 UTF-8 假名字符串
-			actualLen := int(atNextReauthID.Value[0])<<8 | int(atNextReauthID.Value[1])
-			if actualLen > 0 && actualLen+2 <= len(atNextReauthID.Value) {
-				reauthID := string(atNextReauthID.Value[2 : 2+actualLen])
-				s.Logger.Info("捕获到 EAP-AKA 的快速重连假名 (AT_NEXT_REAUTH_ID)")
-
-				// 派生加密密钥 K_encr (MK 的前 16 字节)
-				identity, err := s.akaKeyIdentity()
-				if err != nil {
-					return nil, err
-				}
-				h := sha1.New()
-				h.Write(identity)
-				h.Write(ik)
-				h.Write(ck)
-				mk := h.Sum(nil)
-				keyMat := crypto.NewFIPS1862PRFSHA1(mk).Bytes(nil, 16+16+64)
-				kEncr := keyMat[:16]
-
-				if s.fastReauthCtx != nil {
-					s.fastReauthCtx.SaveReauthData(reauthID, mk, kEncr, kAut)
-				}
-				if s.cfg.OnFastReauthUpdate != nil {
-					s.cfg.OnFastReauthUpdate(reauthID, mk, kAut, kEncr)
-				}
-			} else {
-				// Failed to parse Actual Length or corrupted Value
-				s.Logger.Warn("解析 AT_NEXT_REAUTH_ID 失败：长度校验不通过", logger.Int("valueLen", len(atNextReauthID.Value)), logger.Int("actualLen", actualLen))
-			}
-		}
 
 		return []ikev2.Payload{eapPayload}, nil
 	}
@@ -434,81 +446,7 @@ func (s *Session) handleEAP(eapRaw []byte) ([]ikev2.Payload, error) {
 		if err := s.validateAKACheckcode(pkt.Data); err != nil {
 			return s.akaIdentityClientError(pkt.Identifier)
 		}
-		if s.fastReauthCtx == nil || !s.fastReauthCtx.CanUseReauth() {
-			s.Logger.Warn("收到 EAP-AKA Re-auth 挑战但本地无缓存假名，回退全量认证")
-			return nil, fmt.Errorf("fast reauth context not available")
-		}
-
-		attrs, err := eap.ParseAttributes(pkt.Data)
-		if err != nil {
-			return nil, err
-		}
-		if attr, ok := attrs[eap.AT_RESULT_IND]; ok && len(attr.Value) != 2 {
-			return nil, errEAPNotification
-		}
-
-		atNonceS, ok1 := attrs[eap.AT_NONCE_S]
-		atMAC, ok2 := attrs[eap.AT_MAC]
-		atCounter, ok3 := attrs[eap.AT_COUNTER]
-		if !ok1 || !ok2 || !ok3 {
-			return nil, errors.New("EAP-AKA Re-auth 缺少必要属性 (NONCE_S/MAC/COUNTER)")
-		}
-		if err := eapAKAReauthIntegrityKey(s.fastReauthCtx.KAut); err != nil {
-			return nil, err
-		}
-		recvMac, err := eapAKAAttrTail16(atMAC.Value)
-		if err != nil {
-			return nil, errors.New("EAP-AKA Re-auth AT_MAC truncated")
-		}
-		if eapReauthAllZero(recvMac) {
-			return nil, errors.New("EAP-AKA Re-auth AT_MAC is zero")
-		}
-		nonceS, err := eapAKAAttrTail16(atNonceS.Value)
-		if err != nil {
-			return nil, errors.New("EAP-AKA Re-auth AT_NONCE_S truncated")
-		}
-		if err := verifyEAPAKAMAC(eapRaw, pkt.Data, s.fastReauthCtx.KAut, recvMac); err != nil {
-			s.Logger.Warn("EAP-AKA Re-auth AT_MAC 校验失败")
-			return nil, err
-		}
-
-		counterVal := uint16(0)
-		if len(atCounter.Value) >= 2 {
-			counterVal = uint16(atCounter.Value[0])<<8 | uint16(atCounter.Value[1])
-		}
-
-		s.Logger.Info("发动 EAP-AKA 快速重认证（免 SIM 读卡）",
-			logger.Int("counter", int(counterVal)))
-
-		respData, err := s.fastReauthCtx.BuildReauthResponse(atNonceS.Value, counterVal)
-		if err != nil {
-			s.Logger.Warn("EAP-AKA Re-auth 挑战失败，回退永久 NAI 全量认证",
-				logger.Err(err))
-			s.fastReauthCtx = eap.NewFastReauthContext()
-			return nil, ErrReauth
-		}
-		_, resultInd := attrs[eap.AT_RESULT_IND]
-		if resultInd {
-			respData = append(respData, eap.AT_RESULT_IND, 1, 0, 0)
-		}
-
-		respPkt := &eap.EAPPacket{
-			Code:       eap.CodeResponse,
-			Identifier: pkt.Identifier,
-			Type:       eap.TypeAKA,
-			Subtype:    eap.SubtypeReauthentication,
-			Data:       respData,
-		}
-		eapBytes := respPkt.Encode()
-		if err := fillEAPAKAReauthResponseMAC(eapBytes, s.fastReauthCtx.KAut, nonceS); err != nil {
-			return nil, err
-		}
-
-		newKeyMat := crypto.NewFIPS1862PRFSHA1(s.fastReauthCtx.MK).Bytes(nil, 16+16+64)
-		s.MSK = newKeyMat[32:96]
-		s.completedEAPMethod(eap.TypeAKA, s.fastReauthCtx.KAut, resultInd, true, counterVal, s.fastReauthCtx.KEncr)
-		eapPayload := &ikev2.EncryptedPayloadEAP{EAPMessage: eapBytes}
-		return []ikev2.Payload{eapPayload}, nil
+		return s.handleAKAReauthentication(pkt, eapRaw)
 	}
 
 	// EAP-AKA' Fast Re-authentication is not fully supported.

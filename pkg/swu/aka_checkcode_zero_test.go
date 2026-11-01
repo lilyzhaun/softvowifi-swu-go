@@ -2,7 +2,6 @@ package swu
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 	"testing"
 
@@ -35,13 +34,12 @@ func Test_AKACheckcode_zeroExchanges_whenChallengeOrReauth(t *testing.T) {
 				priorKAut := bytes.Clone(sess.eapKAut)
 				var raw []byte
 				if subtype == 1 {
-					next := (&eap.Attribute{Type: eap.AT_NEXT_REAUTH_ID, Value: append([]byte{0, 6}, []byte("public")...)}).Encode()
-					raw = identityChallenge(t, keys[16:32], append(bytes.Clone(scenario.attr), next...))
+					base := identityChallenge(t, keys[16:32], scenario.attr)
+					raw = independentProtectedAKARequest(t, 1, independentIdentityAttribute(eap.AT_NEXT_REAUTH_ID, "public"), keys[:16], keys[16:32], base[8:len(base)-20])
 				} else {
-					raw = type23ReauthRequest(0xce, 1, bytes.Repeat([]byte{4}, 16), make([]byte, 16), []uint8{21, 19, 11})
-					raw = append(raw[:len(raw)-20], append(bytes.Clone(scenario.attr), raw[len(raw)-20:]...)...)
-					binary.BigEndian.PutUint16(raw[2:4], uint16(len(raw)))
-					copy(raw[len(raw)-16:], independentType23ReauthRequestMAC(keys[16:32], raw))
+					sess.akaIdentity.outer = []byte("old-public-identity")
+					inner := append([]byte{eap.AT_COUNTER, 1, 0, 1, eap.AT_NONCE_S, 5, 0, 0}, bytes.Repeat([]byte{4}, 16)...)
+					raw = independentProtectedAKARequest(t, 13, inner, keys[:16], keys[16:32], scenario.attr)
 				}
 
 				payloads, err := sess.handleEAP(raw)

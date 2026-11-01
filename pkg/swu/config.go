@@ -85,7 +85,12 @@ type Config struct {
 	FastReauthMK       []byte                                        // Master Key (上次全量认证派生)
 	FastReauthKAut     []byte                                        // K_Aut (用于 MAC 校验)
 	FastReauthKEncr    []byte                                        // K_Encr (用于属性加密)
-	OnFastReauthUpdate func(reauthID string, mk, kAut, kEncr []byte) // 外层持久化回调
+	OnFastReauthUpdate func(reauthID string, mk, kAut, kEncr []byte) // Deprecated: cannot persist the fast-auth counter.
+	// TemporaryIdentity supersedes the legacy FastReauth fields when present.
+	// Updates retire one-time identities BEFORE transmission and publish new
+	// state only after final IKE authentication. An error aborts the connection.
+	TemporaryIdentity         *AKATemporaryIdentity
+	OnTemporaryIdentityUpdate func(*AKATemporaryIdentity) error
 
 	TransportFactory func(local string, remote string) (Transport, error)
 	TUNFactory       func(name string) (TUN, error)

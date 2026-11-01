@@ -25,10 +25,17 @@ type akaIdentityState struct {
 }
 
 func (s *Session) resetAKAIdentity() {
+	if s.akaFastConsumed {
+		s.fastReauthCtx = eap.NewFastReauthContext()
+		s.akaPermanentIdentity = true
+	}
 	s.akaIdentity = akaIdentityState{}
 	s.eapKAut = nil
 	s.eapNotification = eapNotificationState{}
 	s.akaPrime = akaPrimeState{}
+	s.akaReauth = akaReauthExchange{}
+	s.akaChallenge = akaIdentityExchange{}
+	s.akaPending = nil
 }
 
 func (s *Session) akaIdentityClientError(id uint8) ([]ikev2.Payload, error) {
@@ -93,14 +100,10 @@ func (s *Session) handleAKAIdentity(pkt *eap.EAPPacket, raw []byte) ([]ikev2.Pay
 		(request == eap.AT_FULLAUTH_ID_REQ && state.lastRequest == eap.AT_FULLAUTH_ID_REQ) {
 		return s.akaIdentityClientError(pkt.Identifier)
 	}
-	imsi, err := s.cfg.SIM.GetIMSI()
+	identity, err := s.selectAKAIdentity(request)
 	if err != nil {
 		return nil, fmt.Errorf("AKA identity SIM identity: %w", err)
 	}
-	if imsi == "" {
-		return nil, errors.New("AKA permanent identity unavailable")
-	}
-	identity := []byte(buildNAI(imsi, s.cfg))
 	value := make([]byte, 2+len(identity))
 	binary.BigEndian.PutUint16(value, uint16(len(identity)))
 	copy(value[2:], identity)
@@ -111,8 +114,10 @@ func (s *Session) handleAKAIdentity(pkt *eap.EAPPacket, raw []byte) ([]ikev2.Pay
 	state.exchanges = append(state.exchanges, akaIdentityExchange{bytes.Clone(raw), bytes.Clone(response)})
 	state.lastRequest = request
 	state.extended = state.extended || extended
-	s.akaPermanentIdentity = true
-	s.fastReauthCtx = eap.NewFastReauthContext()
+	if request != eap.AT_ANY_ID_REQ || !s.fastReauthCtx.CanUseReauth() {
+		s.akaPermanentIdentity = true
+		s.fastReauthCtx = eap.NewFastReauthContext()
+	}
 	return []ikev2.Payload{&ikev2.EncryptedPayloadEAP{EAPMessage: response}}, nil
 }
 

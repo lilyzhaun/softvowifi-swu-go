@@ -121,7 +121,7 @@ func Test_EAPDiagnostics_whenIdentityUsesPseudonym(t *testing.T) {
 	secret := []byte("PRIVATE-PSEUDONYM@invalid")
 	log, output := diagnosticLogger()
 	provider := &diagnosticSIM{}
-	sess := NewSession(&Config{SIM: provider, FastReauthID: string(secret), FastReauthMK: bytes.Repeat([]byte{7}, 20)}, log)
+	sess := NewSession(&Config{SIM: provider, FastReauthID: string(secret), FastReauthMK: bytes.Repeat([]byte{7}, 20), OnTemporaryIdentityUpdate: acceptSyntheticTemporaryIdentity}, log)
 	if _, err := sess.buildIKEAuthInitPayloads(); err != nil {
 		t.Fatal(err)
 	}

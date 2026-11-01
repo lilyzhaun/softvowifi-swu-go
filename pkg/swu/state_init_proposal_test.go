@@ -83,11 +83,12 @@ func Test_buildIKESAInitPacket_emitsSingleCombinedProposal_whenLayoutSingleCombi
 
 func newInitTestSession(layout string) *Session {
 	return NewSession(&Config{
-		EpDGAddr:          "192.0.2.2",
-		EpDGPort:          500,
-		LocalAddr:         "192.0.2.1",
-		LocalPort:         500,
-		IKEProposalLayout: layout,
+		EpDGAddr:                  "192.0.2.2",
+		EpDGPort:                  500,
+		LocalAddr:                 "192.0.2.1",
+		LocalPort:                 500,
+		IKEProposalLayout:         layout,
+		OnTemporaryIdentityUpdate: acceptSyntheticTemporaryIdentity,
 	}, zap.NewNop())
 }
 

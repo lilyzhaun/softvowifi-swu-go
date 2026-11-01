@@ -35,6 +35,7 @@ func Test_EAPDiagnostics_whenConnectReceivesIdentityThenFailure(t *testing.T) {
 	defer logger.SetLogger(previousLogger)
 	provider := &diagnosticSIM{}
 	cfg := &Config{LocalAddr: "127.0.0.1", EpDGAddr: "127.0.0.1", EpDGPort: uint16(peer.LocalAddr().(*net.UDPAddr).Port), SIM: provider, FastReauthID: "PRIVATE-INITIAL-NAI"}
+	cfg.OnTemporaryIdentityUpdate = acceptSyntheticTemporaryIdentity
 	sess := NewSession(cfg, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	finished := make(chan error, 1)
