@@ -143,6 +143,8 @@ type Session struct {
 	saInitResp           []byte // RFC 7296 RealMessage2
 	peerIDrBody          []byte
 	localIDiBody         []byte
+	identityPolicy       *compiledIdentityPolicy
+	identityPolicyErr    error
 	resumeAuthPending    bool
 
 	lastEncryptedMsg   []byte
@@ -231,6 +233,7 @@ func NewSession(cfg *Config, l *zap.Logger) *Session {
 		netTools = driver.NewNetTools()
 	}
 
+	identityPolicy, identityPolicyErr := compileIdentityPolicy(cfg.IdentityPolicy)
 	return &Session{
 		cfg:               cfg,
 		Logger:            l,
@@ -251,6 +254,8 @@ func NewSession(cfg *Config, l *zap.Logger) *Session {
 		fastReauthCtx:     initFastReauthCtx(cfg),
 
 		remoteAddressFamily: cfg.RemoteAddressFamily,
+		identityPolicy:      identityPolicy,
+		identityPolicyErr:   identityPolicyErr,
 	}
 }
 
@@ -308,6 +313,9 @@ func (s *Session) Connect(ctx context.Context) error {
 
 // connectOnce 执行一次完整的 IKE 连接流程
 func (s *Session) connectOnce() (result error) {
+	if err := s.prepareIdentityPolicy(); err != nil {
+		return err
+	}
 	defer func() {
 		s.childMu.Lock()
 		s.security = nil

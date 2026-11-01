@@ -5,6 +5,14 @@
 > 后继维护说明与安全/覆盖边界见[README](README.md)及docs中的协议专题。
 > 原始上游commit/version仍unknown；本轮不改源码、依赖或原许可来填补它们。
 
+## 2026-11-01：IKE身份策略消费者
+
+负责人`lilyzhaun`，基准`1be74c257728eff3d16439b0121bc9a8dc22c922`，分支`feat/ike-identification-policy-20261101`。本地NAI的RFC822/KEY_ID类型、APN来源请求IDr的FQDN/KEY_ID类型及独立对端精确类型/字节约束已接实际消费者；NewSession捕获类型与独立Peer副本，非法显式输入不打开transport，未浅拷整个Config而破坏后装生命周期回调。两个正常UDP消费者行为RED/一个兼容对照PASS后，正式API及新旧身份/AUTH聚焦97通过事件、0失败/skip。对端约束在EAP处理前及最终IDr处检查，原始AUTH、EAP Identity/KDF和失败不提交保持，完整CI与后继消费者验收另据真实回执，见[身份策略](docs/identity-policy.md)。
+
+仅参考RFC7296 §§2.15/2.16/3.5及本仓实际身份/EAP/重认证生命周期，使用本项目公开API，不复制外部客户端格式、字段、默认值或运营商参数。现主调用方没有临时身份跨Session持久回调，不能以库已有FastReauthContext宣称产品已具备该生命周期；本片不新增凭据存储、日志或设备请求。MIT/module/依赖及unknown上游归属保持。
+
+同片补充已认证类型事实：正常Connect先2行为RED后，SessionSnapshot.Identity复用现有认证owner/childMu发布和退役，仅含实际本地/对端类型、请求类型和约束状态，不含身份字节。nil策略保持nil；最终AUTH/数据面失败、取消与退役不发布，返回独立值副本。新旧聚焦59父/46子通过、0失败/skip/race，pkg/swu vet通过；该新输入须以PR最终CI为准，不套旧head的成功回执。
+
 ## 2026-11-01：收到的IDr字节与AUTH输入
 
 负责人`lilyzhaun`，基准`3eaf07b810724d9e4e8d4e799096bb0242cde831`，分支`fix/idr-auth-wire-body-20261101`。依据[RFC7296 §2.15](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.15)及[§3.5](https://www.rfc-editor.org/rfc/rfc7296.html#section-3.5)：ID载荷保留字节没有身份语义，但收到的完整ID body仍参与AUTH。独立线格式/标准库MAC及正常UDP与SKF Connect先取得6个行为失败、1个零保留字节对照通过；最小修正为解码时保存独立body，由认证读取独立副本，发送Encode仍清零RESERVED。既有身份一致性、AUTH及事务提交检查保持，完整结果以实际CI为准，详见[身份认证字节](docs/identity-auth-body.md)。不预报设备、运营商互通或完整身份策略。

@@ -18,6 +18,9 @@ import (
 )
 
 func (s *Session) buildIKEAuthInitPayloads() ([]ikev2.Payload, error) {
+	if err := s.prepareIdentityPolicy(); err != nil {
+		return nil, err
+	}
 	if err := s.prepareProposalPolicy(); err != nil {
 		return nil, err
 	}
@@ -35,14 +38,18 @@ func (s *Session) buildIKEAuthInitPayloads() ([]ikev2.Payload, error) {
 		}
 		nai = buildNAI(imsi, s.cfg)
 	}
+	if s.identityPolicy.explicit && (!validIdentityData(s.identityPolicy.localType, []byte(nai)) ||
+		!validIdentityData(s.identityPolicy.requestedType, []byte(s.cfg.APN))) {
+		return nil, ErrInvalidIdentityPolicy
+	}
 	s.akaIdentity.outer = []byte(nai)
 	idPayload := &ikev2.EncryptedPayloadID{
-		IDType:      ikev2.ID_RFC822_ADDR,
+		IDType:      s.identityPolicy.localType,
 		IDData:      []byte(nai),
 		IsInitiator: true,
 	}
 	idrPayload := &ikev2.EncryptedPayloadID{
-		IDType:      ikev2.ID_FQDN,
+		IDType:      s.identityPolicy.requestedType,
 		IDData:      []byte(s.cfg.APN),
 		IsInitiator: false,
 	}

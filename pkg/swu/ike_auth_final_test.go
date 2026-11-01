@@ -45,16 +45,20 @@ func mustIDrBody(t *testing.T) []byte {
 	return body
 }
 
-func newPostEAPSession(t *testing.T) (*Session, *int) {
+func newPostEAPSession(t *testing.T, configure ...func(*Config)) (*Session, *int) {
 	t.Helper()
 	log, _ := debugDiagnosticLogger()
 	ticketCB := 0
-	sess := NewSession(&Config{
+	cfg := &Config{
 		SIM: issue25ReauthSIM{},
 		OnTicketUpdate: func(_, _ []byte) {
 			ticketCB++
 		},
-	}, log)
+	}
+	for _, apply := range configure {
+		apply(cfg)
+	}
+	sess := NewSession(cfg, log)
 	enc, err := crypto.GetEncrypterWithKeyLen(12, 256)
 	if err != nil {
 		t.Fatal(err)
