@@ -76,6 +76,8 @@ func (s *Session) handlePeerChildRekey(mid uint32, payloads []ikev2.Payload, ops
 	if err != nil {
 		return err
 	}
+	proof := s.beginChildProofChange()
+	defer s.finishChildProofChange(proof)
 	undo, err := s.stagePeerChild(ops, next)
 	if err != nil {
 		_ = s.peerChildReject(mid, ikev2.TEMPORARY_FAILURE)
@@ -101,6 +103,8 @@ func (s *Session) handlePeerChildRekey(mid uint32, payloads []ikev2.Payload, ops
 	s.childOutPolicies = []childOutPolicy{{saOut: next.out, tsr: s.tsr}}
 	s.lastChildRekeyTime = time.Now()
 	s.childMu.Unlock()
+	proof.previous, proof.current = proof.current, s.captureRekeyProof(ops, next)
+	proof.previousPhase, proof.ok = "overlap", true
 	s.renewChildHardExpiry(s.lastChildRekeyTime)
 	s.Logger.Info("对端 CHILD_SA Rekey 成功", logger.Uint32("oldOutSPI", s.retiredChild.out.SPI), logger.Uint32("newOutSPI", next.out.SPI), logger.Uint32("newInSPI", next.in.SPI))
 	select {
@@ -121,6 +125,8 @@ func (s *Session) deleteRetiredChild() error {
 	if old == nil || old.deleted {
 		return nil
 	}
+	proof := s.beginChildProofChange()
+	defer s.finishChildProofChange(proof)
 	if old.ops != nil {
 		if err := old.ops.DelSA(old.out.SPI, s.xfrmLocalIP, s.xfrmRemoteIP, netlink.XFRM_PROTO_ESP); err != nil {
 			return err
@@ -133,6 +139,7 @@ func (s *Session) deleteRetiredChild() error {
 	delete(s.ChildSAsIn, old.in.SPI)
 	s.childMu.Unlock()
 	old.deleted = true
+	proof.previousPhase, proof.ok = "retired", true
 	return nil
 }
 

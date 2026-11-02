@@ -1,6 +1,7 @@
 package swu
 
 import (
+	"context"
 	"os"
 	"testing"
 
@@ -45,8 +46,15 @@ func TestLocalChildRekeyKernelCommitsSelectedSuiteAfterGCM(t *testing.T) {
 		}
 	}
 	s.xfrmMgr = mgr
+	s.saProof.current = captureChildProofPair(mgr, out, in)
+	s.publishNegotiatedSecurity()
 	if err := exerciseChildRekey(t, s, s.RekeyChildSA); err != nil {
 		t.Fatal(err)
+	}
+	proof := s.ReadChildSAProof(context.Background())
+	if proof.State != "verified" || proof.Previous == nil || proof.Previous.State != "absent" ||
+		proof.Previous.Pair.Inbound.State != "absent" || proof.Previous.Pair.Outbound.State != "absent" {
+		t.Fatal("local rekey did not verify new pair and actual old-tuple absence")
 	}
 	states, err := netlink.XfrmStateList(netlink.FAMILY_ALL)
 	if err != nil || len(states) != 2 {

@@ -62,6 +62,9 @@ func (s *Session) publishNegotiatedSecurity() {
 			PeerIDType: s.peerIDrBody[0], PeerConstrained: s.identityPolicy.peer != nil,
 		}
 	}
+	s.saProof.mu.Lock()
+	s.saProof.owner = s.ctx
+	s.saProof.mu.Unlock()
 }
 
 type SessionSnapshot struct {

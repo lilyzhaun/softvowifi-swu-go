@@ -1,6 +1,7 @@
 package swu
 
 import (
+	"context"
 	"encoding/binary"
 	"os"
 	"testing"
@@ -53,8 +54,17 @@ func TestPeerChildRekeyKernelRetiresOnlyThePredecessor(t *testing.T) {
 		}
 	}
 	s.xfrmMgr = mgr
+	// The existing fixture installs a synthetic authenticated pair; subsequent
+	// proof transitions must be driven by the real peer dispatcher and Delete.
+	s.saProof.current = captureChildProofPair(mgr, out, in)
+	s.publishNegotiatedSecurity()
+	foreignToken := canary.CaptureOwnedSA(foreign.SPI, foreign.Dst, foreign.Proto)
 	s.dispatchReceivedIKE(encodePeerPacket(t, s, p, ikev2.CREATE_CHILD_SA, 0, false), nil)
 	<-pipe.sent
+	proof := s.ReadChildSAProof(context.Background())
+	if proof.State != "verified" || proof.Previous == nil || proof.Previous.State != "overlap" {
+		t.Fatal("peer rekey lost current or legal overlap readback")
+	}
 	states, err := netlink.XfrmStateList(netlink.FAMILY_ALL)
 	if err != nil || len(states) != 5 {
 		t.Fatalf("overlap state count=%d err=%v", len(states), err)
@@ -71,6 +81,14 @@ func TestPeerChildRekeyKernelRetiresOnlyThePredecessor(t *testing.T) {
 	d := &ikev2.EncryptedPayloadDelete{ProtocolID: ikev2.ProtoESP, SPISize: 4, NumSPIs: 1, SPIs: binary.BigEndian.AppendUint32(nil, old.out.SPI)}
 	s.dispatchReceivedIKE(encodeInformational(t, s, d), nil)
 	<-pipe.sent
+	proof = s.ReadChildSAProof(context.Background())
+	if proof.State != "verified" || proof.Previous == nil || proof.Previous.State != "absent" ||
+		proof.Previous.Pair.Inbound.State != "absent" || proof.Previous.Pair.Outbound.State != "absent" {
+		t.Fatal("old Delete lacks two actual absence reads")
+	}
+	if canary.ReadOwnedSAProof(context.Background(), foreignToken).State != "verified" {
+		t.Fatal("readback or retirement touched the foreign canary")
+	}
 	states, err = netlink.XfrmStateList(netlink.FAMILY_ALL)
 	if err != nil || len(states) != 3 {
 		t.Fatalf("retired state count=%d err=%v", len(states), err)

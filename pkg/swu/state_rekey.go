@@ -80,6 +80,8 @@ func (s *Session) rekeyChildSA(ops childRekeyXFRMOps) error {
 }
 
 func (s *Session) commitChildSARekey(next childSARekey, ops childRekeyXFRMOps) error {
+	proof := s.beginChildProofChange()
+	defer s.finishChildProofChange(proof)
 	oldOut, oldIn := s.ChildSAOut.SPI, s.ChildSAIn.SPI
 	if err := s.rekeyXFRM(ops, next, [2]uint32{oldOut, oldIn}); err != nil {
 		return fmt.Errorf("commit local Child rekey: %w", err)
@@ -98,6 +100,8 @@ func (s *Session) commitChildSARekey(next childSARekey, ops childRekeyXFRMOps) e
 	}
 	s.lastChildRekeyTime = time.Now()
 	s.childMu.Unlock()
+	proof.previous, proof.current = proof.current, s.captureRekeyProof(ops, next)
+	proof.previousPhase, proof.ok = "retired", true
 	s.renewChildHardExpiry(s.lastChildRekeyTime)
 	if s.ws != nil {
 		s.ws.LogChildSA(next.in.SPI, next.out.SPI, s.cfg.LocalAddr, s.cfg.EpDGAddr, next.in.EncryptionKey, next.out.EncryptionKey, next.encrID)

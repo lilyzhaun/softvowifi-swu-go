@@ -31,11 +31,12 @@ func (key stateKey) query() *netlink.XfrmState {
 }
 
 func (x *XFRMManager) addOwnedState(state *netlink.XfrmState) error {
+	generation := x.nextGeneration()
 	if err := x.ops.stateAdd(state); err != nil {
 		return fmt.Errorf("add XFRM SA: %w", err)
 	}
 	key := stateIdentity(state)
-	record := &ownedState{generation: x.nextGeneration(), endpoints: map[string]bool{state.Src.String(): true, state.Dst.String(): true}}
+	record := &ownedState{generation: generation, endpoints: map[string]bool{state.Src.String(): true, state.Dst.String(): true}}
 	x.states[key] = record
 	actual, err := x.ops.stateGet(key.query())
 	if err == nil {
@@ -72,6 +73,7 @@ func (x *XFRMManager) deleteOwnedState(key stateKey, generation uint64) error {
 	if record == nil || (generation != 0 && generation != record.generation) {
 		return nil
 	}
+	x.nextGeneration() // Retirement also changes ownership when GET finds absence.
 	_, err := x.checkOwnedState(key, record)
 	if err == nil {
 		err = x.ops.stateDel(key.query())
@@ -109,6 +111,7 @@ func (x *XFRMManager) updateOwnedState(cfg XFRMSAConfig) error {
 	if !compatibleSnapshot(immutable, record.snapshot) {
 		return ownershipFailure("update SA", ErrXFRMUpdateUnsupported)
 	}
+	x.nextGeneration() // Same-byte updates also invalidate in-flight readbacks.
 	if err := x.ops.stateUpdate(state); err != nil {
 		return fmt.Errorf("update XFRM SA: %w", err)
 	}

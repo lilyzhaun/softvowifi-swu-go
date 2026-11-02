@@ -201,6 +201,8 @@ func (s *Session) updateXFRMState(localAddr, remoteAddr string) error {
 		}
 	}
 
+	proof := s.beginChildProofChange()
+	defer s.finishChildProofChange(proof)
 	isAEAD := driver.IsAEADAlgorithm(s.childEncrID)
 
 	// ── 更新 SA (出站) ──
@@ -277,6 +279,10 @@ func (s *Session) updateXFRMState(localAddr, remoteAddr string) error {
 	s.xfrmLocalPort = lPort
 	s.xfrmRemotePort = rPort
 
+	if s.ChildSAIn != nil && s.ChildSAOut != nil {
+		proof.current = s.captureRekeyProof(xfrmMgr, childSARekey{in: s.ChildSAIn, out: s.ChildSAOut})
+		proof.ok = true
+	}
 	return nil
 }
 
