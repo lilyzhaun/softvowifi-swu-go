@@ -9,6 +9,7 @@ import (
 var ErrCleanup = errors.New("session network cleanup incomplete")
 
 func (s *Session) cleanupNetworkConfig() error {
+	s.clearChildSAProof()
 	// Complete an in-flight Child installation/rollback before removing the
 	// manager's owned records, so resources cannot reappear after cleanup.
 	s.rekeyMu.Lock()

@@ -5,6 +5,12 @@
 > 后继维护说明与安全/覆盖边界见[README](README.md)及docs中的协议专题。
 > 原始上游commit/version仍unknown；本轮不改源码、依赖或原许可来填补它们。
 
+## 2026-11-02：所属Child SA按需内核读回
+
+负责人`lilyzhaun`，基准`94fc18e053ba1aa78f02904e36a0ec91d1286c97`，分支`feat/owned-child-sa-proof-20261102`。复用本仓owned安装记录、私有snapshot与生命周期，增加固定状态/内核限额的按需读取；最多当前两向与最近旧两tuple，删除ACK不替代实际缺失。代次在变更前失效，不跨netlink等待持生命周期锁，取消/重用/读取错误不伪报成功。直接测试、完整race/vet、两种隔离内核的分层通过及各自前置阴性见[读回合同](docs/owned-child-sa-proof.md)，不冒Android、运营商或自然长期验收。
+
+来源是本仓原ownership/Session、固定netlink API及Go标准库；没有复制外部客户端实现/配置/默认或OEM参数。MIT版权、原module、依赖pin及unknown上游归属保持；API不返回端点、SPI、key、key摘要或原始错误。
+
 ## 2026-11-01：IKE身份策略消费者
 
 负责人`lilyzhaun`，基准`1be74c257728eff3d16439b0121bc9a8dc22c922`，分支`feat/ike-identification-policy-20261101`。本地NAI的RFC822/KEY_ID类型、APN来源请求IDr的FQDN/KEY_ID类型及独立对端精确类型/字节约束已接实际消费者；NewSession捕获类型与独立Peer副本，非法显式输入不打开transport，未浅拷整个Config而破坏后装生命周期回调。两个正常UDP消费者行为RED/一个兼容对照PASS后，正式API及新旧身份/AUTH聚焦97通过事件、0失败/skip。对端约束在EAP处理前及最终IDr处检查，原始AUTH、EAP Identity/KDF和失败不提交保持，完整CI与后继消费者验收另据真实回执，见[身份策略](docs/identity-policy.md)。

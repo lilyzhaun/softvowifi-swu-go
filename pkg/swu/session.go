@@ -67,6 +67,7 @@ type Session struct {
 	childMu      sync.RWMutex
 	retiredChild *peerChildRetirement // rekeyMu owns retirement and request replay.
 	security     *sessionSecurity     // Authenticated snapshot owner; childMu protects it.
+	saProof      childProofState
 
 	childSPI            uint32
 	childDH             *crypto.DiffieHellman
@@ -339,6 +340,7 @@ func (s *Session) Connect(ctx context.Context) error {
 
 // connectOnce 执行一次完整的 IKE 连接流程
 func (s *Session) connectOnce() (result error) {
+	s.clearChildSAProof()
 	if err := s.prepareIdentityPolicy(); err != nil {
 		return err
 	}
@@ -1108,6 +1110,8 @@ func (s *Session) setupDataPlane() error {
 // setupXFRMDataPlane 配置 XFRM 模式的数据平面
 // 创建 XFRM Interface、安装 SA 和 SP，配置 ESP-in-UDP 封装
 func (s *Session) setupXFRMDataPlane() error {
+	proof := s.beginChildProofChange()
+	defer s.finishChildProofChange(proof)
 	s.Logger.Debug("设置 XFRMI 数据平面")
 
 	xfrmMgr := driver.NewXFRMManager()
@@ -1372,6 +1376,8 @@ func (s *Session) setupXFRMDataPlane() error {
 		logger.Uint32("ifID", xfrmIfID),
 		logger.Int("mtu", mtu))
 
+	proof.current = captureChildProofPair(xfrmMgr, outSACfg, inSACfg)
+	proof.previous, proof.previousPhase, proof.ok = nil, "", true
 	return nil
 }
 

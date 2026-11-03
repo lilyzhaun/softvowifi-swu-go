@@ -1,11 +1,13 @@
 package swu
 
 import (
+	"context"
 	"net"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/1239t/swu-go/pkg/driver"
 	"github.com/1239t/swu-go/pkg/ipsec"
 	"github.com/iniwex5/netlink"
 )
@@ -63,6 +65,23 @@ func TestRenewalPolicyInitialAndMobikeKernelLifetimes(t *testing.T) {
 	if err := s.setupXFRMDataPlane(); err != nil {
 		t.Fatal(err)
 	}
+	if s.ReadChildSAProof(context.Background()).State != "unavailable" {
+		t.Fatal("installation before authenticated publication yielded proof")
+	}
+	s.publishNegotiatedSecurity()
+	checkProof := func() {
+		t.Helper()
+		proof := s.ReadChildSAProof(context.Background())
+		if proof.State != "verified" || proof.Current == nil || proof.Previous.State != "not-observed" {
+			t.Fatal("production initial/MOBIKE proof did not read the actual pair")
+		}
+		for _, sa := range []driver.OwnedSAProof{proof.Current.Inbound, proof.Current.Outbound} {
+			if sa.State != "verified" || sa.Limits == nil || sa.Limits.SoftSeconds != 120 || sa.Limits.HardSeconds != 180 {
+				t.Fatal("proof differs from captured kernel lifetimes")
+			}
+		}
+	}
+	checkProof()
 	check := func() map[int]uint64 {
 		t.Helper()
 		states, err := netlink.XfrmStateList(netlink.FAMILY_ALL)
@@ -92,5 +111,12 @@ func TestRenewalPolicyInitialAndMobikeKernelLifetimes(t *testing.T) {
 	}
 	if !s.childHardExpiry.deadline().Equal(due) {
 		t.Fatal("MOBIKE extended the Session's original hard deadline")
+	}
+	checkProof()
+	if err := s.cleanupNetworkConfig(); err != nil {
+		t.Fatal(err)
+	}
+	if s.ReadChildSAProof(context.Background()).State != "unavailable" {
+		t.Fatal("cleanup left a live proof owner")
 	}
 }

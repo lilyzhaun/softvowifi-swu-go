@@ -37,6 +37,8 @@ Linux network drivers and session lifecycle logic. Reviewed maintenance includes
   and an independent exact responder identity constraint without rewriting AUTH inputs.
 - Child-SA rekey/delete uses the local inbound SPI; policy/rule cleanup is scoped
   to the owning session rather than another session's table.
+- Explicit [owned Child-SA readback](docs/owned-child-sa-proof.md) reports current
+  kernel limits and separately samples the most recent predecessor's absence.
 
 See the source and [maintenance notes](PROVENANCE.md), including
 [COOKIE history](PROVENANCE.md#2026-10-10通用ike-cookie重试首载荷),
