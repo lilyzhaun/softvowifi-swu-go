@@ -7,6 +7,10 @@ import (
 )
 
 func (s *Session) deriveChildRekey(encr, integ uint16, bits int, ni, nr []byte, localSPI, peerSPI uint32, localInitiator bool) (childSARekey, error) {
+	return s.deriveChildRekeyWithSecret(encr, integ, bits, ni, nr, localSPI, peerSPI, localInitiator, nil)
+}
+
+func (s *Session) deriveChildRekeyWithSecret(encr, integ uint16, bits int, ni, nr []byte, localSPI, peerSPI uint32, localInitiator bool, shared []byte) (childSARekey, error) {
 	var next childSARekey
 	enc, err := crypto.GetEncrypterWithKeyLen(encr, bits)
 	if err != nil {
@@ -24,7 +28,7 @@ func (s *Session) deriveChildRekey(encr, integ uint16, bits int, ni, nr []byte, 
 		}
 		authLen = auth.KeySize()
 	}
-	seed := append(append([]byte(nil), ni...), nr...)
+	seed := append(append(append([]byte(nil), shared...), ni...), nr...)
 	km, err := crypto.PrfPlus(s.PRFAlg, s.Keys.SK_d, seed, 2*(keyLen+authLen))
 	if err != nil {
 		return next, err

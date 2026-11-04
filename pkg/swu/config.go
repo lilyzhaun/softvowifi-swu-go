@@ -73,6 +73,11 @@ type Config struct {
 	// 默认 false（VoWiFi 场景通常不需要）
 	EnableESN bool
 
+	// ChildPFSGroup requests additional DH only for CREATE_CHILD_SA Child
+	// rekey. Zero preserves no-PFS; 14 enables fresh MODP2048. Other values
+	// are rejected before transport use. Initial IKE_AUTH Child is unchanged.
+	ChildPFSGroup uint16
+
 	DisableEAPMACValidation bool
 
 	EnableWiresharkKeyLog bool

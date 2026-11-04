@@ -32,7 +32,9 @@ func TestInitialChildFreshSingleOfferKeepsTheOriginalSuite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.cfg.InitialChildProposalNumber = 3
+	// The narrowed retry is a fresh owner; the original complete policy stays
+	// captured even when its suite lists were nil.
+	s, _ = newPostEAPSession(t, func(c *Config) { c.InitialChildProposalNumber = 3 })
 	single, err := s.buildIKEAuthInitPayloads()
 	if err != nil {
 		t.Fatal(err)

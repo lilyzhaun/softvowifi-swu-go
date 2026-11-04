@@ -7,9 +7,12 @@ import (
 	"github.com/1239t/swu-go/pkg/ikev2"
 )
 
-func initSelectionFixture(t *testing.T) (*Session, *ikev2.IKEPacket) {
+func initSelectionFixture(t *testing.T, configure ...func(*Config)) (*Session, *ikev2.IKEPacket) {
 	t.Helper()
 	sess := newInitTestSession("")
+	for _, apply := range configure {
+		apply(sess.cfg)
+	}
 	raw, err := sess.buildIKESAInitPacket()
 	if err != nil {
 		t.Fatal(err)

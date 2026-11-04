@@ -5,6 +5,20 @@
 > 后继维护说明与安全/覆盖边界见[README](README.md)及docs中的协议专题。
 > 原始上游commit/version仍unknown；本轮不改源码、依赖或原许可来填补它们。
 
+## 2026-11-05：Child重键的显式MODP14 PFS
+
+负责人`lilyzhaun`，基准`84097b5aae17aff2c8348dc588cf5c794f05390c`，分支`feat/child-rekey-pfs-20261105`。
+项目自有`ChildPFSGroup`只支持0/14；首次协议使用捕获完整策略（包含nil列表与0），
+仅CREATE_CHILD_SA Child重键绑定本次fresh KE/DH与`new_shared|Ni|Nr`，
+复用现有DH/PRF、实际offer验证、两向SA布局、kernel准备/响应/发布及重传/退役事务。
+初始Child不加独立KE，ESN不借此实现，snapshot仅投影成功提交的实际组。
+真实加密首包缺KE的行为RED及no-PFS控制先于生产接线；最终验证分层记录在
+[Child重键PFS](docs/child-rekey-pfs.md)，不冒Android或运营商自然长期验收。
+
+外部仅参考RFC7296 §§1.3/2.17/2.8与RFC3526 group14协议；独立标准库
+DH/HMAC/CBC测试与固定合成向量检验实际加密报文及KEYMAT，不复制外部客户端/OEM实现、
+参数或默认值。原MIT版权、module、依赖pin及unknown上游归属保持。
+
 ## 2026-11-02：所属Child SA按需内核读回
 
 负责人`lilyzhaun`，基准`94fc18e053ba1aa78f02904e36a0ec91d1286c97`，分支`feat/owned-child-sa-proof-20261102`。复用本仓owned安装记录、私有snapshot与生命周期，增加固定状态/内核限额的按需读取；最多当前两向与最近旧两tuple，删除ACK不替代实际缺失。代次在变更前失效，不跨netlink等待持生命周期锁，取消/重用/读取错误不伪报成功。直接测试、完整race/vet、两种隔离内核的分层通过及各自前置阴性见[读回合同](docs/owned-child-sa-proof.md)，不冒Android、运营商或自然长期验收。

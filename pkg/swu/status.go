@@ -25,8 +25,8 @@ type NegotiatedChildSecurity struct {
 	KeyBits    int
 	Integrity  uint16
 	ESN        bool
-	// PFS is the additional Child DH group. The current authenticated and
-	// rekey selectors reject additional DH, so zero means no additional PFS.
+	// PFS is the actual additional DH group of the committed Child rekey.
+	// Initial IKE_AUTH Child and no-PFS rekey report zero, not Config policy.
 	PFS uint16
 }
 
@@ -125,7 +125,7 @@ func (s *Session) Snapshot() SessionSnapshot {
 			IKE: s.security.ike,
 			Child: NegotiatedChildSecurity{
 				Encryption: s.childEncrID, KeyBits: s.childEncrKeyLenBits,
-				Integrity: s.childIntegID, ESN: s.childESN,
+				Integrity: s.childIntegID, ESN: s.childESN, PFS: s.childPFSGroup,
 			},
 		}
 		if s.security.identity != nil {

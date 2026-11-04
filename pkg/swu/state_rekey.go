@@ -50,17 +50,36 @@ func (s *Session) rekeyChildSA(ops childRekeyXFRMOps) error {
 	if len(s.tsi) == 0 || len(s.tsr) == 0 {
 		return errors.New("missing negotiated Child selectors")
 	}
+	var dh *crypto.DiffieHellman
+	var ke *ikev2.EncryptedPayloadKE
+	if group := s.proposalPolicy.childPFS; group != 0 {
+		dh, err = crypto.NewDiffieHellman(group)
+		if err != nil {
+			return err
+		}
+		if err := dh.GenerateKey(); err != nil {
+			return err
+		}
+		ke = &ikev2.EncryptedPayloadKE{DHGroup: ikev2.AlgorithmType(group), KEData: dh.PublicKeyBytes()}
+	}
 	sa := &ikev2.EncryptedPayloadSA{Proposals: proposals}
 	tsi, tsr := &ikev2.EncryptedPayloadTS{IsInitiator: true, TrafficSelectors: s.tsi}, &ikev2.EncryptedPayloadTS{TrafficSelectors: s.tsr}
 	// Owned byte snapshot binds the response to the actual complete offer.
 	packet := ikev2.NewIKEPacket()
 	packet.Payloads = []ikev2.Payload{sa, tsi, tsr}
+	if ke != nil {
+		packet.Payloads = append(packet.Payloads, ke)
+	}
 	offer, err := packet.Encode()
 	if err != nil {
 		return err
 	}
-	response, err := s.sendEncryptedWithRetry([]ikev2.Payload{sa, &ikev2.EncryptedPayloadNonce{NonceData: ni},
-		&ikev2.EncryptedPayloadNotify{ProtocolID: ikev2.ProtoESP, SPI: binary.BigEndian.AppendUint32(nil, s.ChildSAIn.SPI), NotifyType: ikev2.REKEY_SA}, tsi, tsr}, ikev2.CREATE_CHILD_SA)
+	payloads := []ikev2.Payload{sa, &ikev2.EncryptedPayloadNonce{NonceData: ni},
+		&ikev2.EncryptedPayloadNotify{ProtocolID: ikev2.ProtoESP, SPI: binary.BigEndian.AppendUint32(nil, s.ChildSAIn.SPI), NotifyType: ikev2.REKEY_SA}, tsi, tsr}
+	if ke != nil {
+		payloads = append(payloads, ke)
+	}
+	response, err := s.sendEncryptedWithRetry(payloads, ikev2.CREATE_CHILD_SA)
 	if err != nil {
 		return fmt.Errorf("Child rekey exchange: %w", err)
 	}
@@ -68,11 +87,19 @@ func (s *Session) rekeyChildSA(ops childRekeyXFRMOps) error {
 	if err != nil {
 		return err
 	}
-	next, err := s.deriveChildRekey(sel.encr, sel.integ, sel.bits, ni, sel.nonce, localSPI, sel.spi, true)
+	var shared []byte
+	if dh != nil {
+		shared, err = dh.ComputeSharedSecret(sel.ke)
+		if err != nil {
+			return err
+		}
+	}
+	next, err := s.deriveChildRekeyWithSecret(sel.encr, sel.integ, sel.bits, ni, sel.nonce, localSPI, sel.spi, true, shared)
 	if err != nil {
 		return err
 	}
 	next.esn = sel.esn
+	next.pfs = sel.pfs
 	if s.ctx != nil && s.ctx.Err() != nil {
 		return s.ctx.Err()
 	}
@@ -86,6 +113,9 @@ func (s *Session) commitChildSARekey(next childSARekey, ops childRekeyXFRMOps) e
 	if err := s.rekeyXFRM(ops, next, [2]uint32{oldOut, oldIn}); err != nil {
 		return fmt.Errorf("commit local Child rekey: %w", err)
 	}
+	if s.ctx != nil && s.ctx.Err() != nil {
+		return s.ctx.Err() // installed resources remain owned by session cleanup
+	}
 	s.childMu.Lock()
 	s.ChildSAOut, s.ChildSAIn = next.out, next.in
 	if s.ChildSAsIn != nil {
@@ -93,6 +123,7 @@ func (s *Session) commitChildSARekey(next childSARekey, ops childRekeyXFRMOps) e
 		s.ChildSAsIn[next.in.SPI] = next.in
 	}
 	s.childEncrID, s.childIntegID, s.childEncrKeyLenBits, s.childESN = next.encrID, next.integID, next.keyBits, next.esn
+	s.childPFSGroup = next.pfs
 	if len(s.childOutPolicies) > 0 {
 		s.childOutPolicies[0].saOut = next.out
 	} else if len(s.tsr) > 0 {
