@@ -27,6 +27,9 @@ type peerChildRetirement struct {
 // The dispatcher holds rekeyMu. All validation and key construction precede
 // kernel preparation; publication occurs only after the response send succeeds.
 func (s *Session) handlePeerChildRekey(mid uint32, payloads []ikev2.Payload, ops childRekeyXFRMOps) error {
+	if err := s.prepareProposalPolicy(); err != nil {
+		return err
+	}
 	if err := s.prepareRenewalPolicy(); err != nil {
 		return err
 	}
@@ -63,16 +66,37 @@ func (s *Session) handlePeerChildRekey(mid uint32, payloads []ikev2.Payload, ops
 	if localSPI == 0 || s.ChildSAsIn[localSPI] != nil {
 		return s.peerChildReject(mid, ikev2.TEMPORARY_FAILURE)
 	}
-	next, err := s.deriveChildRekey(s.childEncrID, s.childIntegID, s.childEncrKeyLenBits, sel.nonce, nr, localSPI, peerSPI, false)
+	var shared []byte
+	var ke *ikev2.EncryptedPayloadKE
+	if group := s.proposalPolicy.childPFS; group != 0 {
+		dh, err := crypto.NewDiffieHellman(group)
+		if err != nil {
+			return err
+		}
+		if err := dh.GenerateKey(); err != nil {
+			return err
+		}
+		shared, err = dh.ComputeSharedSecret(sel.ke)
+		if err != nil {
+			return s.peerChildReject(mid, ikev2.INVALID_SYNTAX)
+		}
+		ke = &ikev2.EncryptedPayloadKE{DHGroup: ikev2.AlgorithmType(group), KEData: dh.PublicKeyBytes()}
+	}
+	next, err := s.deriveChildRekeyWithSecret(s.childEncrID, s.childIntegID, s.childEncrKeyLenBits, sel.nonce, nr, localSPI, peerSPI, false, shared)
 	if err != nil {
 		return err
 	}
 	responseProposal := ikev2.NewProposal(sel.proposal.ProposalNum, ikev2.ProtoESP, spi)
 	responseProposal.Transforms = sel.proposal.Transforms
-	response, err := s.encryptAndWrapWithMsgID([]ikev2.Payload{
+	next.pfs = s.proposalPolicy.childPFS
+	responsePayloads := []ikev2.Payload{
 		&ikev2.EncryptedPayloadSA{Proposals: []*ikev2.Proposal{responseProposal}}, &ikev2.EncryptedPayloadNonce{NonceData: nr},
 		&ikev2.EncryptedPayloadTS{IsInitiator: true, TrafficSelectors: sel.tsi}, &ikev2.EncryptedPayloadTS{TrafficSelectors: sel.tsr},
-	}, ikev2.CREATE_CHILD_SA, mid, true)
+	}
+	if ke != nil {
+		responsePayloads = append(responsePayloads, ke)
+	}
+	response, err := s.encryptAndWrapWithMsgID(responsePayloads, ikev2.CREATE_CHILD_SA, mid, true)
 	if err != nil {
 		return err
 	}
@@ -90,11 +114,15 @@ func (s *Session) handlePeerChildRekey(mid uint32, payloads []ikev2.Payload, ops
 		rollback := undo()
 		return errors.Join(err, rollback)
 	}
+	if s.ctx != nil && s.ctx.Err() != nil {
+		return errors.Join(s.ctx.Err(), undo())
+	}
 	s.cacheFragmentReply(ikev2.CREATE_CHILD_SA, mid, response)
 	s.childMu.Lock()
 	hardDue := s.childHardExpiry.deadline()
 	s.retiredChild = &peerChildRetirement{in: s.ChildSAIn, out: s.ChildSAOut, ops: ops, expires: retirementDeadline(time.Now(), hardDue), hardDue: hardDue, keys: s.Keys, mid: mid, hash: hash, reply: response}
 	s.ChildSAIn, s.ChildSAOut = next.in, next.out
+	s.childPFSGroup = next.pfs
 	if s.ChildSAsIn == nil {
 		s.ChildSAsIn = make(map[uint32]*ipsec.SecurityAssociation)
 	}
@@ -115,7 +143,11 @@ func (s *Session) handlePeerChildRekey(mid uint32, payloads []ikev2.Payload, ops
 }
 
 func (s *Session) peerChildReject(mid uint32, notify uint16) error {
-	return s.sendEncryptedResponseWithMsgID([]ikev2.Payload{&ikev2.EncryptedPayloadNotify{NotifyType: notify}}, ikev2.CREATE_CHILD_SA, mid)
+	n := &ikev2.EncryptedPayloadNotify{NotifyType: notify}
+	if notify == ikev2.INVALID_KE_PAYLOAD && s.proposalPolicy.childPFS != 0 {
+		n.NotifyData = binary.BigEndian.AppendUint16(nil, s.proposalPolicy.childPFS)
+	}
+	return s.sendEncryptedResponseWithMsgID([]ikev2.Payload{n}, ikev2.CREATE_CHILD_SA, mid)
 }
 
 // Caller owns rekeyMu. Keep the small reply record after deletion to absorb

@@ -33,9 +33,12 @@ func TestInitialChildUnsupportedPrivateCPDoesNotRejectStandardConfiguration(t *t
 	for _, mode := range []string{"original number", "renumbered rejected hint", "fresh single offer"} {
 		for _, size := range []int{0, 1, 15, 17, 32} {
 			t.Run(fmt.Sprintf("%s/%d", mode, size), func(t *testing.T) {
-				s, calls := newPostEAPSession(t)
+				s, calls := newPostEAPSession(t, func(c *Config) {
+					if mode == "fresh single offer" {
+						c.InitialChildProposalNumber = 4
+					}
+				})
 				if mode == "fresh single offer" {
-					s.cfg.InitialChildProposalNumber = 4
 					if _, err := s.buildIKEAuthInitPayloads(); err != nil {
 						t.Fatal(err)
 					}

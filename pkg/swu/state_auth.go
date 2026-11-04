@@ -856,6 +856,7 @@ func (s *Session) handleIKEAuthFinalAt(payloads []ikev2.Payload, received time.T
 	s.childIntegID = integID
 	s.childEncrKeyLenBits = encrKeyLenBits
 	s.childESN = false
+	s.childPFSGroup = 0 // initial IKE_AUTH Child has no independent DH exchange
 	s.cpConfig = selection.cp
 	s.tsi, s.tsr = selection.tsi, selection.tsr
 	s.peerIDrBody = append([]byte(nil), idrBody...)

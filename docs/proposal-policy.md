@@ -51,18 +51,24 @@ This follows [RFC 7296 section 3.3](https://www.rfc-editor.org/rfc/rfc7296#secti
 | `esp-cbc128-sha1-noesn` | AES-CBC 128 | HMAC-SHA1-96 |
 | `esp-cbc256-sha512-noesn` | AES-CBC 256 | HMAC-SHA2-512-256 |
 
-All six explicitly select no ESN and no additional Child DH/PFS. An explicit
-Child policy combined with `EnableESN=true` is rejected. This feature does not
-claim ESN or PFS support. Initial Child and local Child rekey use the same
+All six explicitly select no ESN. An explicit Child policy combined with
+`EnableESN=true` is rejected; ESN remains an independent unsupported feature.
+`Config.ChildPFSGroup` is a separate, captured library-local uint16: zero
+preserves no additional Child DH; 14 enables fresh MODP14 only for Child rekey
+in CREATE_CHILD_SA. Other values are rejected before transport use, without
+downgrade or automatic group switching. Initial IKE_AUTH Child still has no
+independent KE or DH transform. See [Child rekey PFS](child-rekey-pfs.md).
+Initial Child and local Child rekey use the same
 allowed set. Local rekey prefers the negotiated current suite, preserving the
 order of the remaining allowed alternatives. It never restores excluded
 default suites. Incoming rekeys retain the existing negotiated-suite checks.
 
 ## Capture and compatibility
 
-The explicit IKE/Child policy group is captured at first protocol use, before
+The complete IKE/Child/PFS policy group is captured at first protocol use, before
 `Connect` opens the transport. COOKIE retries keep the original offer; later
-changes to input slices cannot change initial Child or rekey policy. Callers
+changes to input slices or PFS (including zero-to-14 with nil IKE/ESP lists)
+cannot change initial Child or rekey policy. Callers
 must create a new Session to change the group and must not concurrently mutate
 Config while it is being captured. Callback setup such as `OnReady` keeps the
 existing API lifecycle.

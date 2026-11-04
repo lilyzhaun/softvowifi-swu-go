@@ -128,12 +128,14 @@ func Test_CombinedProposalPreservesWire_whenDefaultPolicyExpanded(t *testing.T) 
 func Test_InitXCBCSelectionRequiresCombinedOffer_whenPRFSelected(t *testing.T) {
 	for _, layout := range []string{"", ikev2.ProposalLayoutSingleCombined} {
 		t.Run(layout, func(t *testing.T) {
-			sess, packet := initSelectionFixture(t)
-			sess.cfg.IKEProposalLayout = layout
+			sess, packet := initSelectionFixture(t, func(c *Config) { c.IKEProposalLayout = layout })
 			offered, err := sess.buildIKESAInitPacket()
 			if err != nil {
 				t.Fatal(err)
 			}
+			// A responder selects one complete tuple from either layout, never
+			// echoes the combined proposal's alternative transforms.
+			packet.Payloads[0] = &ikev2.EncryptedPayloadSA{Proposals: ikev2.CreateIKEProposals("", nil)[:1]}
 			selectedInitProposal(packet).Transforms[2].ID = ikev2.PRF_AES128_XCBC
 			raw, err := packet.Encode()
 			if err != nil {

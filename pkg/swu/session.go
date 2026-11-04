@@ -71,6 +71,7 @@ type Session struct {
 
 	childSPI            uint32
 	childDH             *crypto.DiffieHellman
+	childPFSGroup       uint16 // actual committed Child rekey group, under childMu
 	childEncrID         uint16 // Child SA 加密算法 ID (用于 XFRM 映射)
 	childIntegID        uint16 // Child SA 完整性算法 ID
 	childEncrKeyLenBits int    // Child SA 加密密钥位数

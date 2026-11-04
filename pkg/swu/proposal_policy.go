@@ -13,6 +13,9 @@ var ErrInvalidProposalPolicy = errors.New("invalid proposal policy")
 // ValidateProposalPolicy checks the same complete policy accepted by Connect.
 // It does not create a Session, access a SIM or socket, or mutate Config.
 func (c *Config) ValidateProposalPolicy() error {
+	if err := validateChildPFS(c.ChildPFSGroup); err != nil {
+		return err
+	}
 	if _, _, err := compileIKEPolicy(c); err != nil {
 		return err
 	}
@@ -45,26 +48,36 @@ var espPolicySuites = map[string]uint8{
 type sessionProposalPolicy struct {
 	ike, child, initialChild []*ikev2.Proposal
 	dh                       uint16
+	childPFS                 uint16
 	err                      error
-	explicit                 bool
 }
 
 // Connect prepares this before opening a socket. Builders also use it so their
-// first use has the same boundary. Explicit policies retain owned templates on
-// COOKIE, redirect and local Child rekey. Nil policies keep the legacy builder
-// and fresh-session single-proposal compatibility behavior.
+// first use has the same boundary. All policies, including zero PFS and nil
+// suite lists, retain owned templates. Legacy single-proposal compatibility
+// still applies when compiled in a fresh Session.
 func (s *Session) prepareProposalPolicy() error {
-	if s.proposalPolicy != nil && s.proposalPolicy.explicit {
+	if s.proposalPolicy != nil {
 		return s.proposalPolicy.err
 	}
-	p := &sessionProposalPolicy{explicit: s.cfg.IKEProposals != nil || s.cfg.ESPProposals != nil}
+	p := &sessionProposalPolicy{childPFS: s.cfg.ChildPFSGroup}
 	s.proposalPolicy = p
+	if p.err = validateChildPFS(p.childPFS); p.err != nil {
+		return p.err
+	}
 	p.ike, p.dh, p.err = compileIKEPolicy(s.cfg)
 	if p.err != nil {
 		return p.err
 	}
 	p.child, p.initialChild, p.err = compileESPPolicy(s.cfg)
 	return p.err
+}
+
+func validateChildPFS(group uint16) error {
+	if group != 0 && group != 14 {
+		return ErrInvalidProposalPolicy
+	}
+	return nil
 }
 
 func compileIKEPolicy(c *Config) ([]*ikev2.Proposal, uint16, error) {

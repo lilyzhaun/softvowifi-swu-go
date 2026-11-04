@@ -40,7 +40,7 @@ func assertNoNegotiatedSecurity(t *testing.T, s *Session) {
 }
 
 func TestNegotiatedSecuritySnapshotUsesActualAuthenticatedSelection(t *testing.T) {
-	for _, scenario := range []string{"authenticated", "invalid_final_auth", "dataplane_failure", "identity_invalid_final_auth", "identity_dataplane_failure"} {
+	for _, scenario := range []string{"authenticated", "invalid_final_auth", "dataplane_failure", "identity_invalid_final_auth", "identity_dataplane_failure", "pfs"} {
 		t.Run(scenario, func(t *testing.T) {
 			name := strings.TrimPrefix(scenario, "identity_")
 			accepted := name != "invalid_final_auth"
@@ -56,6 +56,9 @@ func TestNegotiatedSecuritySnapshotUsesActualAuthenticatedSelection(t *testing.T
 				return nil
 			}))
 			cfg := &Config{LocalAddr: "127.0.0.1", EpDGAddr: "127.0.0.1", EpDGPort: uint16(peer.conn.LocalAddr().(*net.UDPAddr).Port), APN: "ims", SIM: provider}
+			if scenario == "pfs" {
+				cfg.ChildPFSGroup = 14
+			}
 			if name != scenario {
 				cfg.IdentityPolicy = &IdentityPolicy{LocalIDType: ikev2.ID_RFC822_ADDR, RequestedIDrType: ikev2.ID_FQDN,
 					Peer: &PeerIdentity{Type: ikev2.ID_FQDN, Data: []byte(testIDrFQDN)}}
@@ -160,7 +163,11 @@ func TestNegotiatedSecuritySnapshotUsesActualAuthenticatedSelection(t *testing.T
 			before := s.Snapshot()
 			rekeyNegotiatedSnapshotChild(t, s, peer)
 			after := s.Snapshot()
-			if after.Security == nil || after.Security.IKE != before.Security.IKE || after.Security.Child != (NegotiatedChildSecurity{Encryption: 20, KeyBits: 128}) {
+			wantChild := NegotiatedChildSecurity{Encryption: 20, KeyBits: 128}
+			if scenario == "pfs" {
+				wantChild.PFS = 14
+			}
+			if after.Security == nil || after.Security.IKE != before.Security.IKE || after.Security.Child != wantChild {
 				t.Fatal("authenticated Child rekey did not publish its selected GCM128 tuple")
 			}
 			if before.Security.Child.KeyBits != 256 || before.Security.Child.Integrity != 12 {
@@ -221,6 +228,15 @@ func rekeyNegotiatedSnapshotChild(t *testing.T, s *Session, peer *akaWirePeer) {
 		&ikev2.EncryptedPayloadSA{Proposals: []*ikev2.Proposal{selected}},
 		&ikev2.EncryptedPayloadNonce{NonceData: bytes.Repeat([]byte{0x42}, 32)},
 	}, selectors...)
+	var shared []byte
+	if ke := opened[byte(ikev2.KE)]; len(ke) != 0 {
+		if len(ke) != 260 || binary.BigEndian.Uint16(ke[:2]) != 14 {
+			t.Fatal("authenticated connection's rekey has malformed KE")
+		}
+		key, secret := childPFSPeer(ke[4:])
+		shared = secret
+		response = append(response, &ikev2.EncryptedPayloadKE{DHGroup: 14, KEData: key})
+	}
 	peer.send(t, encodePeerPacket(t, s, response, ikev2.CREATE_CHILD_SA, header.MessageID, true))
 	raw = peer.receive(t)
 	header, err = ikev2.DecodeHeader(raw)
@@ -235,6 +251,9 @@ func rekeyNegotiatedSnapshotChild(t *testing.T, s *Session, peer *akaWirePeer) {
 	case err := <-done:
 		if err != nil {
 			t.Fatal(err)
+		}
+		if shared != nil {
+			assertChildPFSKeys(t, s, peerChildSuites[1], shared, opened[byte(ikev2.NiNr)], bytes.Repeat([]byte{0x42}, 32), true)
 		}
 	case <-s.ctx.Done():
 		t.Fatal("real Child rekey did not finish")

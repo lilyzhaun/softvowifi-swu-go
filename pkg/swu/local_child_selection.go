@@ -14,6 +14,14 @@ func (s *Session) localChildProposals(spi []byte) ([]*ikev2.Proposal, error) {
 	}
 	all := policyProposalsWithSPI(s.proposalPolicy.child, spi)
 	current := s.currentChildProposal(spi)
+	if group := s.proposalPolicy.childPFS; group != 0 {
+		for _, p := range append(all, current) {
+			// SPI clones share immutable template slices; append to an owned
+			// slice so the initial IKE_AUTH templates never gain Child DH.
+			p.Transforms = append([]*ikev2.Transform(nil), p.Transforms...)
+			p.AddTransform(ikev2.TransformTypeDH, ikev2.AlgorithmType(group), 0)
+		}
+	}
 	found := -1
 	for i, p := range all {
 		if sameCompleteChildProposal(p, current) {
@@ -60,6 +68,8 @@ type localChildSelection struct {
 	esn         bool
 	spi         uint32
 	nonce       []byte
+	ke          []byte
+	pfs         uint16
 }
 
 func (s *Session) selectLocalChildRekey(payloads []ikev2.Payload, request []byte) (localChildSelection, error) {
@@ -71,10 +81,16 @@ func (s *Session) selectLocalChildRekey(payloads []ikev2.Payload, request []byte
 	}
 	var offered *ikev2.EncryptedPayloadSA
 	var offeredI, offeredR *ikev2.EncryptedPayloadTS
+	var offeredKE *ikev2.EncryptedPayloadKE
 	for _, pl := range offer.Payloads {
 		switch p := pl.(type) {
 		case *ikev2.EncryptedPayloadSA:
 			offered = p
+		case *ikev2.EncryptedPayloadKE:
+			if offeredKE != nil {
+				return result, invalid
+			}
+			offeredKE = p
 		case *ikev2.EncryptedPayloadTS:
 			if p.IsInitiator {
 				offeredI = p
@@ -86,6 +102,7 @@ func (s *Session) selectLocalChildRekey(payloads []ikev2.Payload, request []byte
 	var selected *ikev2.EncryptedPayloadSA
 	var nonce *ikev2.EncryptedPayloadNonce
 	var tsi, tsr *ikev2.EncryptedPayloadTS
+	var ke *ikev2.EncryptedPayloadKE
 	for _, pl := range payloads {
 		switch p := pl.(type) {
 		case *ikev2.EncryptedPayloadSA:
@@ -111,7 +128,10 @@ func (s *Session) selectLocalChildRekey(payloads []ikev2.Payload, request []byte
 				tsr = p
 			}
 		case *ikev2.EncryptedPayloadKE:
-			return result, invalid
+			if ke != nil {
+				return result, invalid
+			}
+			ke = p
 		case *ikev2.EncryptedPayloadNotify:
 			if p.NotifyType < 16384 {
 				return result, fmt.Errorf("CREATE_CHILD_SA 被拒绝，通知类型: %d", p.NotifyType)
@@ -136,6 +156,14 @@ func (s *Session) selectLocalChildRekey(payloads []ikev2.Payload, request []byte
 		}
 	}
 	if !matched {
+		return result, invalid
+	}
+	if offeredKE != nil {
+		if offeredKE.DHGroup != 14 || ke == nil || ke.DHGroup != offeredKE.DHGroup {
+			return result, invalid
+		}
+		result.pfs, result.ke = uint16(offeredKE.DHGroup), ke.KEData
+	} else if ke != nil {
 		return result, invalid
 	}
 	for _, t := range p.Transforms {

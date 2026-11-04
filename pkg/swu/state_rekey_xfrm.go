@@ -22,6 +22,7 @@ type childSARekey struct {
 	integID uint16
 	keyBits int
 	esn     bool
+	pfs     uint16
 }
 
 func (s *Session) childRekeyXFRMConfigs(next childSARekey) (out, in driver.XFRMSAConfig, policies []driver.XFRMSPConfig, err error) {
@@ -119,6 +120,9 @@ func (s *Session) rekeyXFRM(ops childRekeyXFRMOps, next childSARekey, old [2]uin
 		if err := ops.AddSP(policy); err != nil {
 			return fmt.Errorf("Rekey 更新策略 %d 失败，保留新旧 SA 待会话清理: %w", index, err)
 		}
+	}
+	if s.ctx != nil && s.ctx.Err() != nil {
+		return s.ctx.Err() // retain owned new/old states for lifecycle cleanup
 	}
 	if err := ops.DelSA(old[0], localIP, remoteIP, netlink.XFRM_PROTO_ESP); err != nil {
 		return fmt.Errorf("Rekey 删除旧出站 SA 失败，残留待会话清理: %w", err)

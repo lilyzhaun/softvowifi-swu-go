@@ -42,8 +42,13 @@ func Test_InitSingleOriginalOfferUsesCorrectNumberWithoutNewTransforms(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess.cfg.InitialIKEProposalNumber = 4
-	retry, err := sess.buildIKESAInitPacket()
+	// Two distinct first-use builders with identical synthetic INIT inputs
+	// isolate the suite-numbering comparison. A live retry uses a fresh owner;
+	// it must not hot-edit an already captured Session's nil-list policy.
+	fresh := newInitTestSession("")
+	fresh.cfg.InitialIKEProposalNumber = 4
+	fresh.SPIi, fresh.DH, fresh.ni = sess.SPIi, sess.DH, bytes.Clone(sess.ni)
+	retry, err := fresh.buildIKESAInitPacket()
 	if err != nil {
 		t.Fatal(err)
 	}
