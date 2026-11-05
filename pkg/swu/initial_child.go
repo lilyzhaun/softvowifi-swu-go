@@ -24,6 +24,7 @@ type initialChildSelection struct {
 	tsi, tsr    []*ikev2.TrafficSelector
 	encr, integ uint16
 	keyBits     int
+	esn         bool
 }
 
 func (s *Session) snapshotInitialChildRequest(cp *ikev2.EncryptedPayloadCP, sa *ikev2.EncryptedPayloadSA, tsi, tsr *ikev2.EncryptedPayloadTS) error {
@@ -157,10 +158,12 @@ func (s *Session) selectInitialChild(payloads []ikev2.Payload) (initialChildSele
 		case ikev2.TransformTypeInteg:
 			selection.integ = uint16(transform.ID)
 		case ikev2.TransformTypeESN:
-			// All six original complete offers explicitly select NO_ESN.
-			if transform.ID != 0 {
+			// The exact captured offer was matched above; ESN is never inferred
+			// from current Config or an omitted mandatory transform.
+			if transform.ID > 1 || len(transform.Attributes) != 0 {
 				return empty, initialChildFailure("unoffered ESN")
 			}
+			selection.esn = transform.ID == 1
 		case ikev2.TransformTypeDH:
 			if transform.ID != 0 || len(transform.Attributes) != 0 {
 				return empty, initialChildFailure("unoffered DH")

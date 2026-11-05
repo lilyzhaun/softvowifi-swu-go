@@ -16,7 +16,8 @@ IMS/SIP注册、短信投递、语音媒体、Android SIM接线和账户开通�
 - 可选的完整[续期策略](docs/renewal-policy.md)独立接入SA寿命、重新认证、DPD、NAT保活和请求重传；未设置时保留原兼容基线，配置值不冒网侧协商事实。
 - 可选的[IKE身份策略](docs/identity-policy.md)捕获NAI/APN的线格式类型及独立对端身份约束，保持原始AUTH字节和实际EAP身份。
 - Child SA换钥/删除的本端入向SPI语义，以及按会话归属回收规则/策略。
-- 可选捕获的[Child重键PFS](docs/child-rekey-pfs.md)仅在CREATE_CHILD_SA中使用fresh MODP14；0保留无额外DH，初始IKE_AUTH Child不加独立KE，不代表ESN已实现。
+- 可选捕获的[Child重键PFS](docs/child-rekey-pfs.md)仅在CREATE_CHILD_SA中使用fresh MODP14；0保留无额外DH，初始IKE_AUTH Child不加独立KE；ESN是独立能力。
+- 显式启用的[ESP ESN](docs/esn.md)将完整报价绑定到真实认证选择、两向ESP序号/反重放和Child重键；默认noESN保持。主机及隔离内核验证不代表Android或运营商支持。
 
 详见[来源与维护记录](PROVENANCE.md)、[错误透传](docs/ike-auth-final-reject.md)、
 [报价说明](docs/esp-sha512-offer.md)及[身份时序](docs/request-driven-equipment-identity.md)。

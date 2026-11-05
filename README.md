@@ -39,7 +39,10 @@ Linux network drivers and session lifecycle logic. Reviewed maintenance includes
   to the owning session rather than another session's table.
 - Optional captured [Child rekey PFS](docs/child-rekey-pfs.md) adds fresh MODP14
   to local/peer CREATE_CHILD_SA rekey; zero keeps the no-PFS baseline and initial
-  IKE_AUTH Child has no independent KE. This is not ESN support.
+  IKE_AUTH Child has no independent KE. ESN is a separate capability.
+- Opt-in [ESP ESN](docs/esn.md) binds complete offers to authenticated selection,
+  two-way ESP counters/replay and Child rekey; default noESN behavior remains.
+  Host and isolated-kernel checks do not establish Android/carrier support.
 - Explicit [owned Child-SA readback](docs/owned-child-sa-proof.md) reports current
   kernel limits and separately samples the most recent predecessor's absence.
 

@@ -37,7 +37,7 @@ func TestAUTHRoundConnectCoPayloadReachesFinalAUTH(t *testing.T) {
 	}
 }
 
-func testAKAIdentityAUTH(t *testing.T, layout string) {
+func testAKAIdentityAUTH(t *testing.T, layout string, esnMode ...bool) {
 	t.Helper()
 	peer := newAKAWirePeer(t)
 	send := func(payloads []akaWirePayload) {
@@ -48,6 +48,8 @@ func testAKAIdentityAUTH(t *testing.T, layout string) {
 		peer.sendFragmented(t, payloads, layout == "reordered")
 	}
 	sess, provider := identitySession(t)
+	esn := len(esnMode) != 0 && esnMode[0]
+	sess.cfg.EnableESN = esn
 	sess.cfg.FastReauthID = "original-pseudonym@public.invalid"
 	sess.cfg.LocalAddr, sess.cfg.EpDGAddr = "127.0.0.1", "127.0.0.1"
 	sess.cfg.EpDGPort = uint16(peer.conn.LocalAddr().(*net.UDPAddr).Port)
@@ -90,6 +92,18 @@ func testAKAIdentityAUTH(t *testing.T, layout string) {
 	assertIdentityPolicySnapshot(t, sess, 0, 0, false)
 	peer.negotiate(t)
 	initial := peer.decrypt(t, peer.receive(t))
+	if esn {
+		found := false
+		for _, payload := range initial {
+			if payload.kind == 33 {
+				assertESNCompleteOfferBytes(t, payload.body)
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("actual UDP AUTH omitted the ESP offer")
+		}
+	}
 	if len(initial) == 0 || initial[0].kind != 35 {
 		t.Fatal("missing AUTH1 IDi")
 	}
@@ -185,7 +199,15 @@ func testAKAIdentityAUTH(t *testing.T, layout string) {
 		t.Error("initiator AUTH must bind original pseudonym IDi, not inner permanent NAI")
 	}
 	responderAUTH := independentResponderAUTH(keys[32:96], peer.keys[192:224], idrBody, peer.initResponse, peer.initiatorNonce)
-	childBody, err := testChildSA().Encode()
+	selectedChild := testChildSA()
+	if esn {
+		for _, transform := range selectedChild.Proposals[0].Transforms {
+			if transform.Type == ikev2.TransformTypeESN {
+				transform.ID = 1
+			}
+		}
+	}
+	childBody, err := selectedChild.Encode()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,6 +224,13 @@ func testAKAIdentityAUTH(t *testing.T, layout string) {
 	send(final)
 	select {
 	case <-established:
+		if esn {
+			security := sess.Snapshot().Security
+			if security == nil || !security.Child.ESN {
+				t.Fatal("actual Connect did not expose authenticated ESN facts")
+			}
+			assertESNPairTraffic(t, sess)
+		}
 		if strings.HasPrefix(layout, "identity-") {
 			local, requested := uint8(ikev2.ID_RFC822_ADDR), uint8(ikev2.ID_FQDN)
 			if layout == "identity-key-id" {

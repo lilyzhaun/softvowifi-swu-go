@@ -99,6 +99,7 @@ func (s *Session) rekeyChildSA(ops childRekeyXFRMOps) error {
 		return err
 	}
 	next.esn = sel.esn
+	next.out.ESN, next.in.ESN = next.esn, next.esn
 	next.pfs = sel.pfs
 	if s.ctx != nil && s.ctx.Err() != nil {
 		return s.ctx.Err()
