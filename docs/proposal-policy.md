@@ -51,8 +51,11 @@ This follows [RFC 7296 section 3.3](https://www.rfc-editor.org/rfc/rfc7296#secti
 | `esp-cbc128-sha1-noesn` | AES-CBC 128 | HMAC-SHA1-96 |
 | `esp-cbc256-sha512-noesn` | AES-CBC 256 | HMAC-SHA2-512-256 |
 
-All six explicitly select no ESN. An explicit Child policy combined with
-`EnableESN=true` is rejected; ESN remains an independent unsupported feature.
+These six retain no ESN. Each also has a complete `-esn` variant with the same
+encryption/integrity tuple; mixed-mode lists select only their explicit tuples.
+Legacy `EnableESN=true` selects ESN for nil-list offers and conflicts with an
+explicit list containing a `-noesn` suite. Mode is captured with the policy,
+not read from later Config changes. See [ESN](esn.md) for data-plane limits.
 `Config.ChildPFSGroup` is a separate, captured library-local uint16: zero
 preserves no additional Child DH; 14 enables fresh MODP14 only for Child rekey
 in CREATE_CHILD_SA. Other values are rejected before transport use, without

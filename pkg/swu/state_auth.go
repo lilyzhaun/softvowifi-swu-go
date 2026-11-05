@@ -855,7 +855,8 @@ func (s *Session) handleIKEAuthFinalAt(payloads []ikev2.Payload, received time.T
 	s.childEncrID = encrID
 	s.childIntegID = integID
 	s.childEncrKeyLenBits = encrKeyLenBits
-	s.childESN = false
+	s.childESN = selection.esn
+	childOut.ESN, childIn.ESN = selection.esn, selection.esn
 	s.childPFSGroup = 0 // initial IKE_AUTH Child has no independent DH exchange
 	s.cpConfig = selection.cp
 	s.tsi, s.tsr = selection.tsi, selection.tsr
@@ -878,7 +879,7 @@ func (s *Session) handleIKEAuthFinalAt(payloads []ikev2.Payload, received time.T
 	if ticket != nil && s.cfg.OnTicketUpdate != nil {
 		s.cfg.OnTicketUpdate(append([]byte(nil), ticket...), append([]byte(nil), s.resumeOldSKd...))
 	}
-	s.Logger.Info("ePDG_SA_AUTH: IPsec ESP (Child SA) 算法协商成功", logger.String("encr", ikev2.EncrToString(encrID)), logger.String("integ", ikev2.IntegToString(integID)), logger.Bool("esn", false))
+	s.Logger.Info("ePDG_SA_AUTH: IPsec ESP (Child SA) 算法协商成功", logger.String("encr", ikev2.EncrToString(encrID)), logger.String("integ", ikev2.IntegToString(integID)), logger.Bool("esn", selection.esn))
 
 	s.Logger.Debug("Child SA 已建立", logger.Uint32("localSPI", s.childSPI), logger.Uint32("remoteSPI", remoteSPI))
 	return nil

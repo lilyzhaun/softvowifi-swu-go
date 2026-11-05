@@ -10,18 +10,33 @@ import (
 // [ SPI (4) | Seq (4) | IV (var) | Payload ... | Padding ... | PadLen(1) | NextHeader(1) ] [ ICV (var) ]
 
 func Encapsulate(plaintext []byte, sa *SecurityAssociation) ([]byte, error) {
-	seq := sa.NextSequenceNumber()
+	if sa.ESN && !sa.IsAEAD && sa.IntegrityAlg2 == nil {
+		return nil, errors.New("ESP ESN requires an integrity algorithm")
+	}
+	seq, err := sa.nextSequenceNumber()
+	if err != nil {
+		return nil, err
+	}
 
 	// 准备头部
 	header := make([]byte, 8)
 	binary.BigEndian.PutUint32(header[0:4], sa.SPI)
-	binary.BigEndian.PutUint32(header[4:8], seq)
+	binary.BigEndian.PutUint32(header[4:8], uint32(seq))
 
 	// IV
 	ivSize := sa.EncryptionAlg.IVSize()
-	iv, err := crypto.RandomBytes(ivSize)
-	if err != nil {
-		return nil, err
+	var iv []byte
+	if sa.ESN && sa.IsAEAD {
+		if ivSize != 8 {
+			return nil, errors.New("ESP ESN AEAD requires an eight-byte explicit IV")
+		}
+		iv = make([]byte, ivSize)
+		binary.BigEndian.PutUint64(iv, seq)
+	} else {
+		iv, err = crypto.RandomBytes(ivSize)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// 准备载荷 + 填充 + 填充长度 + 下一个头部
@@ -68,8 +83,8 @@ func Encapsulate(plaintext []byte, sa *SecurityAssociation) ([]byte, error) {
 	dataToEncrypt[len(plaintext)+padLen+1] = nextHeader
 
 	// 加密
-	// GCM 的 AAD: SPI + Seq
-	aad := header // First 8 bytes
+	// GCM AAD is SPI + low sequence, or SPI + full sequence for ESN.
+	aad := espAAD(header, seq, sa.ESN)
 
 	ciphertext, err := sa.EncryptionAlg.Encrypt(dataToEncrypt, sa.EncryptionKey, iv, aad)
 	if err != nil {
@@ -86,8 +101,8 @@ func Encapsulate(plaintext []byte, sa *SecurityAssociation) ([]byte, error) {
 	// 所以对于 AEAD，encryptedPayload 已经包含 ICV。
 	// 对于 CBC + HMAC，需要计算并附加 HMAC。
 	if !sa.IsAEAD && sa.IntegrityAlg2 != nil {
-		// 计算整个 ESP 包的 HMAC (SPI + Seq + IV + Ciphertext)
-		icv := sa.IntegrityAlg2.Compute(sa.IntegrityKey, encryptedPayload)
+		// ESN authenticates the high word after header, IV, and ciphertext.
+		icv := sa.IntegrityAlg2.Compute(sa.IntegrityKey, espIntegrityInput(encryptedPayload, seq, sa.ESN))
 		encryptedPayload = append(encryptedPayload, icv...)
 	}
 
@@ -103,9 +118,20 @@ func Decapsulate(packet []byte, sa *SecurityAssociation) ([]byte, error) {
 	if sa != nil && sa.SPI != 0 && spi != sa.SPI {
 		return nil, errors.New("ESP SPI 不匹配")
 	}
+	if sa.ESN && !sa.IsAEAD && sa.IntegrityAlg2 == nil {
+		return nil, errors.New("ESP ESN requires an integrity algorithm")
+	}
 
-	seq := binary.BigEndian.Uint32(packet[4:8])
-	_ = seq
+	seq := uint64(binary.BigEndian.Uint32(packet[4:8]))
+	if sa.ESN {
+		sa.mu.Lock()
+		defer sa.mu.Unlock()
+		var err error
+		seq, err = sa.receiveESN(uint32(seq))
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	ivSize := sa.EncryptionAlg.IVSize()
 	if len(packet) < 8+ivSize {
@@ -122,7 +148,7 @@ func Decapsulate(packet []byte, sa *SecurityAssociation) ([]byte, error) {
 
 		// ICV 在包的末尾
 		receivedICV := packet[len(packet)-icvSize:]
-		dataToVerify := packet[:len(packet)-icvSize]
+		dataToVerify := espIntegrityInput(packet[:len(packet)-icvSize], seq, sa.ESN)
 
 		// 验证 HMAC
 		if !sa.IntegrityAlg2.Verify(sa.IntegrityKey, dataToVerify, receivedICV) {
@@ -137,7 +163,7 @@ func Decapsulate(packet []byte, sa *SecurityAssociation) ([]byte, error) {
 	}
 
 	iv := packet[8 : 8+ivSize]
-	aad := packet[0:8] // SPI + Seq
+	aad := espAAD(packet[0:8], seq, sa.ESN)
 
 	plaintext, err := sa.EncryptionAlg.Decrypt(ciphertextWithICV, sa.EncryptionKey, iv, aad)
 	if err != nil {
@@ -156,6 +182,37 @@ func Decapsulate(packet []byte, sa *SecurityAssociation) ([]byte, error) {
 	if len(plaintext) < 2+padLen {
 		return nil, errors.New("invalid padding length")
 	}
+	if sa.ESN {
+		for i := 0; i < padLen; i++ {
+			if plaintext[len(plaintext)-2-padLen+i] != byte(i+1) {
+				return nil, errors.New("invalid ESP padding")
+			}
+		}
+		if nextHeader != 4 && nextHeader != 41 {
+			return nil, errors.New("unsupported ESP next header")
+		}
+		sa.commitReceiveESN(seq)
+	}
 
 	return plaintext[:len(plaintext)-2-padLen], nil
+}
+
+func espAAD(header []byte, seq uint64, esn bool) []byte {
+	if !esn {
+		return header
+	}
+	aad := make([]byte, 12)
+	copy(aad, header[:4])
+	binary.BigEndian.PutUint64(aad[4:], seq)
+	return aad
+}
+
+func espIntegrityInput(packet []byte, seq uint64, esn bool) []byte {
+	if !esn {
+		return packet
+	}
+	data := make([]byte, len(packet)+4)
+	copy(data, packet)
+	binary.BigEndian.PutUint32(data[len(packet):], uint32(seq>>32))
+	return data
 }

@@ -8,7 +8,7 @@ import (
 
 func (x *XFRMManager) buildXfrmState(cfg XFRMSAConfig) *netlink.XfrmState {
 	replayWindow := cfg.ReplayWindow
-	if replayWindow <= 0 && cfg.SADir != netlink.XFRM_SA_DIR_OUT {
+	if replayWindow <= 0 && (cfg.ESN || cfg.SADir != netlink.XFRM_SA_DIR_OUT) {
 		replayWindow = 32
 	}
 	state := &netlink.XfrmState{

@@ -5,6 +5,17 @@
 > 后继维护说明与安全/覆盖边界见[README](README.md)及docs中的协议专题。
 > 原始上游commit/version仍unknown；本轮不改源码、依赖或原许可来填补它们。
 
+## 2026-11-05：ESP ESN协议与数据面
+
+负责人`lilyzhaun`，基准`e61778fbc3065d5579d31e6b1acb273f3f3fce2f`。
+在真实ESP、受保护AUTH及manager消费者反例之后，接线首次捕获的完整ESN套件、
+两向ESP高序认证/固定窗口、Child重键及静态内核owner匹配；默认noESN不变。
+固定netlink至正式`d35d90655c7d`版本，原module/MIT及其它依赖保持。
+来源仅RFC4303附录A、RFC4106§8、RFC7296 transform语义、本仓已有生命周期及Go标准库，
+没有复制外部客户端实现/格式/默认或OEM参数，不补造未知原始上游归属。
+分层验证和未验边界见[ESN说明](docs/esn.md)；不由源码、CI或Linux6.8前置
+推定真实SIM、Android、运营商、无感切网或长期稳定通过。
+
 ## 2026-11-05：Child重键的显式MODP14 PFS
 
 负责人`lilyzhaun`，基准`84097b5aae17aff2c8348dc588cf5c794f05390c`，分支`feat/child-rekey-pfs-20261105`。

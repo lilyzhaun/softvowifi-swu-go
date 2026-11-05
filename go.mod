@@ -2,7 +2,7 @@ module github.com/1239t/swu-go
 
 go 1.24.0
 
-replace github.com/iniwex5/netlink => github.com/lilyzhaun/softvowifi-netlink v0.0.0-20260915075719-be8893d91893
+replace github.com/iniwex5/netlink => github.com/lilyzhaun/softvowifi-netlink v0.0.0-20261105000017-d35d90655c7d
 
 require (
 	github.com/iniwex5/netlink v1.3.3

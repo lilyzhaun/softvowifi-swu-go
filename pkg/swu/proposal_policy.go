@@ -43,6 +43,12 @@ var espPolicySuites = map[string]uint8{
 	"esp-cbc128-sha256-noesn": 4,
 	"esp-cbc128-sha1-noesn":   5,
 	"esp-cbc256-sha512-noesn": 6,
+	"esp-gcm256-esn":          7,
+	"esp-gcm128-esn":          8,
+	"esp-cbc256-sha256-esn":   9,
+	"esp-cbc128-sha256-esn":   10,
+	"esp-cbc128-sha1-esn":     11,
+	"esp-cbc256-sha512-esn":   12,
 }
 
 type sessionProposalPolicy struct {
@@ -162,22 +168,31 @@ func combineExactIKEPolicy(proposals []*ikev2.Proposal) ([]*ikev2.Proposal, erro
 func compileESPPolicy(c *Config) ([]*ikev2.Proposal, []*ikev2.Proposal, error) {
 	all := ikev2.CreateMultiProposalESP(nil)
 	if c.ESPProposals != nil {
-		if len(c.ESPProposals) == 0 || len(c.ESPProposals) > len(all) || c.InitialChildProposalNumber != 0 || c.EnableESN {
+		if len(c.ESPProposals) == 0 || len(c.ESPProposals) > len(espPolicySuites) || c.InitialChildProposalNumber != 0 {
 			return nil, nil, ErrInvalidProposalPolicy
 		}
 		selected := make([]*ikev2.Proposal, 0, len(c.ESPProposals))
 		seen := make(map[string]bool, len(c.ESPProposals))
 		for _, name := range c.ESPProposals {
 			n, ok := espPolicySuites[name]
-			if !ok || seen[name] {
+			if !ok || seen[name] || c.EnableESN && n <= 6 {
 				return nil, nil, ErrInvalidProposalPolicy
 			}
 			seen[name] = true
-			p := all[n-1]
+			esn := n > 6
+			if esn {
+				n -= 6
+			}
+			p := espProposalWithESN(all[n-1], esn)
 			p.ProposalNum = uint8(len(selected) + 1)
 			selected = append(selected, p)
 		}
 		return selected, selected, nil
+	}
+	if c.EnableESN {
+		for i, p := range all {
+			all[i] = espProposalWithESN(p, true)
+		}
 	}
 	initial := all
 	if n := c.InitialChildProposalNumber; n != 0 {
@@ -189,6 +204,22 @@ func compileESPPolicy(c *Config) ([]*ikev2.Proposal, []*ikev2.Proposal, error) {
 		initial = []*ikev2.Proposal{&chosen}
 	}
 	return all, initial, nil
+}
+
+func espProposalWithESN(original *ikev2.Proposal, enabled bool) *ikev2.Proposal {
+	copy := *original
+	copy.Transforms = append([]*ikev2.Transform(nil), original.Transforms...)
+	for i, transform := range copy.Transforms {
+		if transform.Type == ikev2.TransformTypeESN {
+			owned := *transform
+			owned.ID = 0
+			if enabled {
+				owned.ID = 1
+			}
+			copy.Transforms[i] = &owned
+		}
+	}
+	return &copy
 }
 
 // Only proposal numbers and SPI vary in callers. Transform templates remain

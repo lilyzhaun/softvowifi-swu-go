@@ -52,6 +52,8 @@ type stateSnapshot struct {
 	selector                    policyKey
 	outputMark                  markIdentity
 	timeSoft, timeHard          uint64
+	esn                         bool
+	esnReplayWindow             int
 }
 
 func snapshotState(state *netlink.XfrmState) stateSnapshot {
@@ -61,6 +63,12 @@ func snapshotState(state *netlink.XfrmState) stateSnapshot {
 		crypt: snapshotAlgorithm(state.Crypt), aead: snapshotAlgorithm(state.Aead),
 		outputMark: identifyMark(state.OutputMark),
 		timeSoft:   state.Limits.TimeSoft, timeHard: state.Limits.TimeHard,
+		esn: state.ESN,
+	}
+	// The ESN replay layout is static ownership evidence; live sequence words
+	// and bitmap are not. Retain legacy non-ESN direction/window compatibility.
+	if state.ESN {
+		result.esnReplayWindow = state.ReplayWindow
 	}
 	if state.Encap != nil {
 		result.encapType = state.Encap.Type

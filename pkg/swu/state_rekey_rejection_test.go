@@ -19,6 +19,11 @@ func TestChildRekeyPreservesState_whenProtectedNotify14(t *testing.T) {
 	} {
 		t.Run(mode.name, func(t *testing.T) {
 			sess, pipe := childRekeySession(t)
+			// This fixture already represents an authenticated non-ESN owner.
+			// Capture its original policy before testing a late Config mutation.
+			if err := sess.prepareProposalPolicy(); err != nil {
+				t.Fatal(err)
+			}
 			sess.cfg.EnableESN = mode.esn
 			snap := snapshotChildRekey(sess)
 			kernel := newRekeyKernel()
