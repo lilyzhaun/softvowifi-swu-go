@@ -18,6 +18,7 @@ IMS/SIP注册、短信投递、语音媒体、Android SIM接线和账户开通�
 - Child SA换钥/删除的本端入向SPI语义，以及按会话归属回收规则/策略。
 - 可选捕获的[Child重键PFS](docs/child-rekey-pfs.md)仅在CREATE_CHILD_SA中使用fresh MODP14；0保留无额外DH，初始IKE_AUTH Child不加独立KE；ESN是独立能力。
 - 显式启用的[ESP ESN](docs/esn.md)将完整报价绑定到真实认证选择、两向ESP序号/反重放和Child重键；默认noESN保持。主机及隔离内核验证不代表Android或运营商支持。
+- 可选[严格接口MTU](docs/interface-mtu.md)在TUN/XFRMI setter失败时中止就绪；默认保留best-effort兼容，验证状态与限制见专题。
 
 详见[来源与维护记录](PROVENANCE.md)、[错误透传](docs/ike-auth-final-reject.md)、
 [报价说明](docs/esp-sha512-offer.md)及[身份时序](docs/request-driven-equipment-identity.md)。

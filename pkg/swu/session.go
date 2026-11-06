@@ -165,6 +165,8 @@ type Session struct {
 	dpdStart        sync.Once
 
 	remoteAddressFamily ipsec.AddressFamilyPolicy
+	requireInterfaceMTU bool
+	interfaceMTU        int
 
 	// RFC 5723: Session Resumption
 	resumeTicket []byte // ePDG 下发的 Ticket_Opaque
@@ -263,6 +265,8 @@ func NewSession(cfg *Config, l *zap.Logger) *Session {
 		fastReauthCtx:     initFastReauthCtx(cfg),
 
 		remoteAddressFamily: cfg.RemoteAddressFamily,
+		requireInterfaceMTU: cfg.RequireInterfaceMTU,
+		interfaceMTU:        cfg.TUNMTU,
 		identityPolicy:      identityPolicy,
 		identityPolicyErr:   identityPolicyErr,
 	}
@@ -296,6 +300,9 @@ func (s *Session) Connect(ctx context.Context) error {
 	s.cancel = func() { s.cancelCause(context.Canceled) }
 	defer s.cancel()
 	defer close(s.done)
+	if err := s.validateInterfaceMTURequirement(); err != nil {
+		return err
+	}
 	const maxRedirects = 3
 	redirectCount := 0
 
@@ -1043,13 +1050,14 @@ func (s *Session) Shutdown() {
 }
 
 func (s *Session) setupDataPlane() error {
+	mtu, err := s.dataPlaneMTU()
+	if err != nil {
+		return err
+	}
 	// 创建 TUN
 	tunName := s.cfg.TUNName
 
-	var (
-		tun TUN
-		err error
-	)
+	var tun TUN
 	if s.cfg.TUNFactory != nil {
 		tun, err = s.cfg.TUNFactory(tunName)
 	} else {
@@ -1067,15 +1075,11 @@ func (s *Session) setupDataPlane() error {
 			s.tun = nil
 			return err
 		}
-		mtu := s.cfg.TUNMTU
-		if mtu == 0 {
-			mtu = 1358 // 必须留出 ESP-in-UDP 封装开销（约 106 B），防止 IP 分片导致 SIP 信令丢包
-		}
-		if mtu > 0 && s.cpConfig != nil && len(s.cpConfig.IPv6Addresses) > 0 && mtu < 1280 {
-			mtu = 1280
-		}
 		if mtu > 0 {
 			if err := tx.SetMTU(s.tun.DeviceName(), mtu); err != nil {
+				if s.requireInterfaceMTU {
+					return s.closeTUNAfterMTUFailure(fmt.Errorf("set TUN MTU: %w", err))
+				}
 				s.Logger.Warn("设置 TUN MTU 失败，将继续", logger.String("iface", s.tun.DeviceName()), logger.Int("mtu", mtu), logger.Err(err))
 			}
 		}
@@ -1086,15 +1090,11 @@ func (s *Session) setupDataPlane() error {
 			s.tun = nil
 			return err
 		}
-		mtu := s.cfg.TUNMTU
-		if mtu == 0 {
-			mtu = 1358 // 必须留出 ESP-in-UDP 封装开销（约 106 B），防止 IP 分片导致 SIP 信令丢包
-		}
-		if mtu > 0 && s.cpConfig != nil && len(s.cpConfig.IPv6Addresses) > 0 && mtu < 1280 {
-			mtu = 1280
-		}
 		if mtu > 0 {
 			if err := s.net.SetMTU(s.tun.DeviceName(), mtu); err != nil {
+				if s.requireInterfaceMTU {
+					return s.closeTUNAfterMTUFailure(fmt.Errorf("set TUN MTU: %w", err))
+				}
 				s.Logger.Warn("设置 TUN MTU 失败，将继续", logger.String("iface", s.tun.DeviceName()), logger.Int("mtu", mtu), logger.Err(err))
 			}
 		}
@@ -1111,6 +1111,10 @@ func (s *Session) setupDataPlane() error {
 // setupXFRMDataPlane 配置 XFRM 模式的数据平面
 // 创建 XFRM Interface、安装 SA 和 SP，配置 ESP-in-UDP 封装
 func (s *Session) setupXFRMDataPlane() error {
+	mtu, err := s.dataPlaneMTU()
+	if err != nil {
+		return err
+	}
 	proof := s.beginChildProofChange()
 	defer s.finishChildProofChange(proof)
 	s.Logger.Debug("设置 XFRMI 数据平面")
@@ -1340,30 +1344,11 @@ func (s *Session) setupXFRMDataPlane() error {
 	if err := s.net.SetLinkUp(xfrmIfName); err != nil {
 		return fmt.Errorf("启动 XFRM 接口失败: %v", err)
 	}
-	mtu := s.cfg.TUNMTU
-	if mtu == 0 {
-		// XFRM 接口（内层虚拟接口）的 MTU 必须减去 IPsec/UDP 封装开销，
-		// 否则内层数据包加上 ESP-in-UDP 封装头后会超出底层网络的 MTU（通常 1500），
-		// 触发 IP 分片。IP 分片包极易被 NAT 路由器或运营商设备丢弃，
-		// 导致 SIP INVITE 等大型信令包（含 SDP 体）被丢弃，进而表现为"来电经常接不到"。
-		//
-		// 典型开销（IPv4 底层 + ESP-in-UDP + 内层 IPv6）：
-		//   底层 IPv4 头  20 B
-		//   UDP（NAT-T）   8 B
-		//   ESP Header     8 B
-		//   IV（AES-GCM） 12 B
-		//   ESP Trailer    ≈2 B
-		//   ICV（GCM-16） 16 B
-		//   内层 IPv6 头  40 B
-		//   ≈ 106 B 开销
-		// 1500 - 106 - 36（对齐余量）= 1358，与运营商 VoLTE 设备通用值一致。
-		mtu = 1358
-	}
-	if mtu > 0 && s.cpConfig != nil && len(s.cpConfig.IPv6Addresses) > 0 && mtu < 1280 {
-		mtu = 1280
-	}
 	if mtu > 0 {
 		if err := s.net.SetMTU(xfrmIfName, mtu); err != nil {
+			if s.requireInterfaceMTU {
+				return fmt.Errorf("set XFRM interface MTU: %w", err)
+			}
 			s.Logger.Warn("设置 XFRM 接口 MTU 失败", logger.Err(err))
 		}
 	}
@@ -1663,7 +1648,7 @@ func (s *Session) startDataPlaneLoop() {
 			}
 
 			// 内层分片（避免外层 IP 分片破坏 ESP 完整性）
-			innerMTU := s.cfg.TUNMTU
+			innerMTU := s.interfaceMTU
 			if innerMTU <= 0 {
 				innerMTU = 1358
 			}

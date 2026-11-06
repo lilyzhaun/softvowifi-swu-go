@@ -5,6 +5,19 @@
 > 后继维护说明与安全/覆盖边界见[README](README.md)及docs中的协议专题。
 > 原始上游commit/version仍unknown；本轮不改源码、依赖或原许可来填补它们。
 
+## 2026-11-06：显式接口MTU失败门禁
+
+负责人`lilyzhaun`，基准`071629bbf62eb4d8803884bef0b5925f79daa082`。
+真实TUN消费者先证明strict setter失败仍继续而同值legacy控制通过；
+新增默认false的可选`RequireInterfaceMTU`，捕获严格要求及数值，接入TUN/XFRMI的
+错误传播与既有owned清理边界。仅复用本仓NetTools、Session、undo及Go标准库，
+不复制外部客户端格式、字段或默认，不新增OEM参数、依赖或通用重试框架。
+MIT、原module、所有依赖pin及unknown原始上游归属保持。
+聚焦和Linux6.8私有netns的真实bootstrap/owned清理已分层通过，
+一次完整race/shuffle/count1及vet通过（529父/1080子PASS、18父/12子原条件skip），
+CI仍待收口；SA方向元数据未提供不记方向通过。分层状态与限制见
+[接口MTU](docs/interface-mtu.md)，不冒设备、运营商或长期验收。
+
 ## 2026-11-05：ESP ESN协议与数据面
 
 负责人`lilyzhaun`，基准`e61778fbc3065d5579d31e6b1acb273f3f3fce2f`。
