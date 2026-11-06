@@ -42,6 +42,8 @@ Linux network drivers and session lifecycle logic. Reviewed maintenance includes
   IKE_AUTH Child has no independent KE. ESN is a separate capability.
 - Opt-in [ESP ESN](docs/esn.md) binds complete offers to authenticated selection,
   two-way ESP counters/replay and Child rekey; default noESN behavior remains.
+- Optional [strict interface MTU](docs/interface-mtu.md) rejects failed TUN/XFRMI
+  setters before readiness; the default retains best-effort compatibility.
   Host and isolated-kernel checks do not establish Android/carrier support.
 - Explicit [owned Child-SA readback](docs/owned-child-sa-proof.md) reports current
   kernel limits and separately samples the most recent predecessor's absence.
