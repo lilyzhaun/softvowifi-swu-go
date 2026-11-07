@@ -19,6 +19,10 @@ import (
 )
 
 func (s *Session) buildIKEAuthInitPayloads() ([]ikev2.Payload, error) {
+	ipv4, ipv6, err := s.innerAddressFamilies()
+	if err != nil {
+		return nil, err
+	}
 	if err := s.prepareIdentityPolicy(); err != nil {
 		return nil, err
 	}
@@ -58,18 +62,20 @@ func (s *Session) buildIKEAuthInitPayloads() ([]ikev2.Payload, error) {
 	}
 
 	// 1b. CP (CFG_REQUEST)
-	// 双栈请求（IPv4 + IPv6）：部分 ePDG 对仅 v6 请求不响应，双栈最兼容
-	cpPayload := &ikev2.EncryptedPayloadCP{
-		CFGType: ikev2.CFG_REQUEST,
-		Attributes: []*ikev2.CPAttribute{
-			{Type: ikev2.INTERNAL_IP4_ADDRESS},
-			{Type: ikev2.INTERNAL_IP4_DNS},
-			{Type: ikev2.P_CSCF_IP4_ADDRESS},
-			{Type: ikev2.INTERNAL_IP6_ADDRESS},
-			{Type: ikev2.INTERNAL_IP6_DNS},
-			{Type: ikev2.P_CSCF_IP6_ADDRESS},
-			{Type: ikev2.ASSIGNED_PCSCF_IP6_ADDRESS},
-		},
+	// Captured inner family; the omitted policy retains the original ordering.
+	cpPayload := &ikev2.EncryptedPayloadCP{CFGType: ikev2.CFG_REQUEST}
+	if ipv4 {
+		cpPayload.Attributes = append(cpPayload.Attributes,
+			&ikev2.CPAttribute{Type: ikev2.INTERNAL_IP4_ADDRESS},
+			&ikev2.CPAttribute{Type: ikev2.INTERNAL_IP4_DNS},
+			&ikev2.CPAttribute{Type: ikev2.P_CSCF_IP4_ADDRESS})
+	}
+	if ipv6 {
+		cpPayload.Attributes = append(cpPayload.Attributes,
+			&ikev2.CPAttribute{Type: ikev2.INTERNAL_IP6_ADDRESS},
+			&ikev2.CPAttribute{Type: ikev2.INTERNAL_IP6_DNS},
+			&ikev2.CPAttribute{Type: ikev2.P_CSCF_IP6_ADDRESS},
+			&ikev2.CPAttribute{Type: ikev2.ASSIGNED_PCSCF_IP6_ADDRESS})
 	}
 
 	// 2. SA (Child SA)
@@ -91,7 +97,7 @@ func (s *Session) buildIKEAuthInitPayloads() ([]ikev2.Payload, error) {
 		Proposals: proposals,
 	}
 
-	// 3. TSi / TSr (0.0.0.0/0, ::/0) - 双栈（与 CP 一致）
+	// 3. TSi / TSr: only the families requested by CP.
 	ts4 := ikev2.NewTrafficSelectorIPV4(
 		[]byte{0, 0, 0, 0}, []byte{255, 255, 255, 255},
 		0, 65535,
@@ -101,8 +107,15 @@ func (s *Session) buildIKEAuthInitPayloads() ([]ikev2.Payload, error) {
 		ipv6Max[i] = 0xff
 	}
 	ts6 := ikev2.NewTrafficSelectorIPV6(net.IPv6zero, ipv6Max, 0, 65535)
-	tsPayloadI := &ikev2.EncryptedPayloadTS{IsInitiator: true, TrafficSelectors: []*ikev2.TrafficSelector{ts4, ts6}}
-	tsPayloadR := &ikev2.EncryptedPayloadTS{IsInitiator: false, TrafficSelectors: []*ikev2.TrafficSelector{ts4, ts6}}
+	var selectors []*ikev2.TrafficSelector
+	if ipv4 {
+		selectors = append(selectors, ts4)
+	}
+	if ipv6 {
+		selectors = append(selectors, ts6)
+	}
+	tsPayloadI := &ikev2.EncryptedPayloadTS{IsInitiator: true, TrafficSelectors: selectors}
+	tsPayloadR := &ikev2.EncryptedPayloadTS{IsInitiator: false, TrafficSelectors: selectors}
 
 	// RFC 5998 section 3: Protocol ID and SPI size are zero, with no additional data.
 	notifyPayload := &ikev2.EncryptedPayloadNotify{
