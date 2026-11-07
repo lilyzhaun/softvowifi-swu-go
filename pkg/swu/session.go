@@ -165,6 +165,7 @@ type Session struct {
 	dpdStart        sync.Once
 
 	remoteAddressFamily ipsec.AddressFamilyPolicy
+	innerAddressFamily  string
 	requireInterfaceMTU bool
 	interfaceMTU        int
 
@@ -265,6 +266,7 @@ func NewSession(cfg *Config, l *zap.Logger) *Session {
 		fastReauthCtx:     initFastReauthCtx(cfg),
 
 		remoteAddressFamily: cfg.RemoteAddressFamily,
+		innerAddressFamily:  cfg.InnerAddressFamily,
 		requireInterfaceMTU: cfg.RequireInterfaceMTU,
 		interfaceMTU:        cfg.TUNMTU,
 		identityPolicy:      identityPolicy,
@@ -300,6 +302,9 @@ func (s *Session) Connect(ctx context.Context) error {
 	s.cancel = func() { s.cancelCause(context.Canceled) }
 	defer s.cancel()
 	defer close(s.done)
+	if _, _, err := s.innerAddressFamilies(); err != nil {
+		return err
+	}
 	if err := s.validateInterfaceMTURequirement(); err != nil {
 		return err
 	}

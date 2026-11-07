@@ -35,6 +35,11 @@ type Config struct {
 	// candidates. Empty preserves compatibility. Explicit policies require the
 	// built-in Connect transport; custom factories and MOBIKE reject them.
 	RemoteAddressFamily ipsec.AddressFamilyPolicy
+	// InnerAddressFamily is captured by NewSession and selects the initial
+	// Child CP/TS request: "", "ipv4", "ipv6", or "dual-stack". Empty keeps
+	// the original dual-stack request. It does not select outer endpoints,
+	// infer roaming, change APN/MTU, or describe an assigned address.
+	InnerAddressFamily string
 	// IdentityPolicy is captured by NewSession. Source NAI/APN and EAP method
 	// identities keep their existing paths; this is not a static local-ID override.
 	IdentityPolicy *IdentityPolicy

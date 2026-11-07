@@ -33,6 +33,8 @@ Linux network drivers and session lifecycle logic. Reviewed maintenance includes
   to their runtime consumers; an omitted policy preserves the legacy baseline.
 - Captured [remote address-family selection](docs/remote-address-family.md)
   constrains actual ePDG candidates while keeping DNS endpoint selection independent.
+- Optional captured [inner address family](docs/inner-address-family.md) selects
+  initial Child CP/TS families independently of outer endpoints and interface MTU.
 - Captured [IKE identity policy](docs/identity-policy.md) selects NAI/APN wire types
   and an independent exact responder identity constraint without rewriting AUTH inputs.
 - Child-SA rekey/delete uses the local inbound SPI; policy/rule cleanup is scoped
