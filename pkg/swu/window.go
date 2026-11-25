@@ -48,6 +48,8 @@ type OutgoingMessage struct {
 	// 信号通知通道：如果成功，把收到的解密包推入；如果彻底超时抛出 nil 关闭通道
 	CompletionCh chan []byte
 	response     *protectedIKEMessage // Published before CompletionCh; Session-only decoded delivery.
+	sendFailed   bool
+	exhausted    bool // Published on CompletionCh close only by the real retry deadline.
 }
 
 // TaskManager 用于接管原有的线性重试池，支撑滑动窗口概念 (Window Size)
@@ -152,8 +154,8 @@ func (tm *TaskManager) activateMessage(msg *OutgoingMessage) {
 	tm.pending[msg.MsgID] = msg
 
 	// 首次推报
-	if tm.sendFunc != nil {
-		_ = tm.sendFunc(msg.Packets)
+	if tm.sendFunc != nil && tm.sendFunc(msg.Packets) != nil {
+		msg.sendFailed = true
 	}
 	// 触发更新轮询
 	select {
@@ -276,6 +278,7 @@ func (tm *TaskManager) checkTimeouts() {
 				if tm.responseCleanup != nil {
 					tm.responseCleanup(msg)
 				}
+				msg.exhausted = true
 				close(msg.CompletionCh)
 			} else {
 				// 惩罚增长并执行再次空投
@@ -296,8 +299,8 @@ func (tm *TaskManager) checkTimeouts() {
 					logger.Int("retry", msg.RetryCount),
 					logger.Duration("nextDeadline", msg.NextTimeout))
 
-				if tm.sendFunc != nil {
-					_ = tm.sendFunc(msg.Packets)
+				if tm.sendFunc != nil && tm.sendFunc(msg.Packets) != nil {
+					msg.sendFailed = true
 				}
 			}
 		}

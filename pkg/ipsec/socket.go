@@ -197,6 +197,8 @@ type SocketManager struct {
 	ctx          context.Context
 	observer     SocketObserver
 
+	alternateFamily AddressFamilyPolicy
+
 	IKEChan   chan []byte
 	ESPChan   chan []byte
 	NetEvents chan NetEvent // 网络底层事件通道 (PMTU / ICMP Error)
@@ -331,9 +333,16 @@ func NewSocketManagerWithAddressFamily(ctx context.Context, local, remote, dnsSe
 	}
 	// A single UDP socket cannot rotate onto the other address family.
 	compatible := remoteIPs[:0]
+	selectedIPv4 := rAddr.IP.To4() != nil
+	var alternate AddressFamilyPolicy
 	for _, ip := range remoteIPs {
-		if (ip.To4() != nil) == (rAddr.IP.To4() != nil) {
+		switch {
+		case (ip.To4() != nil) == selectedIPv4:
 			compatible = append(compatible, ip)
+		case selectedIPv4 && family == AddressFamilyPreferIPv4:
+			alternate = AddressFamilyIPv6Only
+		case !selectedIPv4 && family == AddressFamilyPreferIPv6:
+			alternate = AddressFamilyIPv4Only
 		}
 	}
 	remoteIPs = compatible
@@ -377,7 +386,16 @@ func NewSocketManagerWithAddressFamily(ctx context.Context, local, remote, dnsSe
 		ESPChan:      make(chan []byte, 1000), // 数据平面的更高缓冲区
 		NetEvents:    make(chan NetEvent, 10),
 		closeChan:    make(chan struct{}),
+
+		alternateFamily: alternate,
 	}, nil
+}
+
+// AlternateAddressFamily reports an opposite-family candidate from the same
+// resolution and source selection, outside this socket. It is nonzero only
+// when an explicit preference selected its preferred family.
+func (s *SocketManager) AlternateAddressFamily() AddressFamilyPolicy {
+	return s.alternateFamily
 }
 
 func resolveUDPAddrAll(addr string, dnsServer string) (*net.UDPAddr, []net.IP, error) {
