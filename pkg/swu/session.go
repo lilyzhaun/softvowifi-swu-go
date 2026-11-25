@@ -347,6 +347,11 @@ func (s *Session) Connect(ctx context.Context) error {
 
 			continue
 		}
+		// The caller's original endpoint no longer identifies an internally
+		// redirected connection, so do not recommend a family for it.
+		if timeout, ok := err.(*InitialAddressFamilyTimeout); ok && redirectCount != 0 {
+			return timeout.Unwrap()
+		}
 		return err
 	}
 }
@@ -451,7 +456,8 @@ func (s *Session) connectOnce() (result error) {
 
 	resumed := false
 	// 检查是否有存活的 Ticket，实施 RFC 5723 快速恢复
-	if len(s.resumeTicket) > 0 && len(s.resumeOldSKd) > 0 {
+	triedResume := len(s.resumeTicket) > 0 && len(s.resumeOldSKd) > 0
+	if triedResume {
 		s.Logger.Info("察觉到 Ticket 车票缓存，尝试发动 IKEv2 Session Resumption 瞬时重连...")
 		err = s.performSessionResumption()
 		if err == nil {
@@ -482,16 +488,25 @@ func (s *Session) connectOnce() (result error) {
 			}
 
 			// 异步推送，并挂起等待窗口的回执通道
-			compCh := s.taskMgr.EnqueueRequest(0, ikev2.IKE_SA_INIT, nil, [][]byte{reqData})
+			request := s.taskMgr.enqueueRequest(0, ikev2.IKE_SA_INIT, nil, [][]byte{reqData})
 
 			var respData []byte
 			var ok bool
 			select {
 			case <-s.ctx.Done():
 				return s.ctx.Err()
-			case respData, ok = <-compCh:
+			case respData, ok = <-request.CompletionCh:
 				if !ok || respData == nil {
-					return s.initWindowTimeout()
+					if err := s.ctx.Err(); err != nil {
+						return err
+					}
+					err := s.initWindowTimeout()
+					if err == ErrWindowTimeout && request.exhausted && !request.sendFailed && !triedResume && !s.sendCookie {
+						if socket, ok := s.socket.(*ipsec.SocketManager); ok && socket.AlternateAddressFamily() != "" {
+							return &InitialAddressFamilyTimeout{alternate: socket.AlternateAddressFamily()}
+						}
+					}
+					return err
 				}
 			}
 
